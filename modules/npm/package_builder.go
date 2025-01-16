@@ -18,13 +18,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"strings"
 
 	"github.com/gohugoio/hugo/common/hugio"
 
 	"github.com/gohugoio/hugo/hugofs/files"
-
-	"github.com/pkg/errors"
 
 	"github.com/gohugoio/hugo/hugofs"
 	"github.com/spf13/afero"
@@ -46,33 +45,33 @@ const (
 }`
 )
 
-func Pack(fs afero.Fs, fis []hugofs.FileMetaInfo) error {
+func Pack(sourceFs, assetsWithDuplicatesPreservedFs afero.Fs) error {
 	var b *packageBuilder
 
 	// Have a package.hugo.json?
-	fi, err := fs.Stat(files.FilenamePackageHugoJSON)
+	fi, err := sourceFs.Stat(files.FilenamePackageHugoJSON)
 	if err != nil {
 		// Have a package.json?
-		fi, err = fs.Stat(packageJSONName)
+		fi, err = sourceFs.Stat(packageJSONName)
 		if err == nil {
 			// Preserve the original in package.hugo.json.
-			if err = hugio.CopyFile(fs, packageJSONName, files.FilenamePackageHugoJSON); err != nil {
-				return errors.Wrap(err, "npm pack: failed to copy package file")
+			if err = hugio.CopyFile(sourceFs, packageJSONName, files.FilenamePackageHugoJSON); err != nil {
+				return fmt.Errorf("npm pack: failed to copy package file: %w", err)
 			}
 		} else {
 			// Create one.
 			name := "project"
 			// Use the Hugo site's folder name as the default name.
 			// The owner can change it later.
-			rfi, err := fs.Stat("")
+			rfi, err := sourceFs.Stat("")
 			if err == nil {
 				name = rfi.Name()
 			}
 			packageJSONContent := fmt.Sprintf(packageJSONTemplate, name, "0.1.0")
-			if err = afero.WriteFile(fs, files.FilenamePackageHugoJSON, []byte(packageJSONContent), 0666); err != nil {
+			if err = afero.WriteFile(sourceFs, files.FilenamePackageHugoJSON, []byte(packageJSONContent), 0o666); err != nil {
 				return err
 			}
-			fi, err = fs.Stat(files.FilenamePackageHugoJSON)
+			fi, err = sourceFs.Stat(files.FilenamePackageHugoJSON)
 			if err != nil {
 				return err
 			}
@@ -83,14 +82,23 @@ func Pack(fs afero.Fs, fis []hugofs.FileMetaInfo) error {
 	masterFilename := meta.Filename
 	f, err := meta.Open()
 	if err != nil {
-		return errors.Wrap(err, "npm pack: failed to open package file")
+		return fmt.Errorf("npm pack: failed to open package file: %w", err)
 	}
 	b = newPackageBuilder(meta.Module, f)
 	f.Close()
 
+	d, err := assetsWithDuplicatesPreservedFs.Open(files.FolderJSConfig)
+	if err != nil {
+		return nil
+	}
+
+	fis, err := d.(fs.ReadDirFile).ReadDir(-1)
+	if err != nil {
+		return fmt.Errorf("npm pack: failed to read assets: %w", err)
+	}
+
 	for _, fi := range fis {
 		if fi.IsDir() {
-			// We only care about the files in the root.
 			continue
 		}
 
@@ -106,25 +114,25 @@ func Pack(fs afero.Fs, fis []hugofs.FileMetaInfo) error {
 
 		f, err := meta.Open()
 		if err != nil {
-			return errors.Wrap(err, "npm pack: failed to open package file")
+			return fmt.Errorf("npm pack: failed to open package file: %w", err)
 		}
 		b.Add(meta.Module, f)
 		f.Close()
 	}
 
 	if b.Err() != nil {
-		return errors.Wrap(b.Err(), "npm pack: failed to build")
+		return fmt.Errorf("npm pack: failed to build: %w", b.Err())
 	}
 
 	// Replace the dependencies in the original template with the merged set.
 	b.originalPackageJSON[dependenciesKey] = b.dependencies
 	b.originalPackageJSON[devDependenciesKey] = b.devDependencies
-	var commentsm map[string]interface{}
+	var commentsm map[string]any
 	comments, found := b.originalPackageJSON["comments"]
 	if found {
 		commentsm = maps.ToStringMap(comments)
 	} else {
-		commentsm = make(map[string]interface{})
+		commentsm = make(map[string]any)
 	}
 	commentsm[dependenciesKey] = b.dependenciesComments
 	commentsm[devDependenciesKey] = b.devDependenciesComments
@@ -136,11 +144,11 @@ func Pack(fs afero.Fs, fis []hugofs.FileMetaInfo) error {
 	encoder.SetEscapeHTML(false)
 	encoder.SetIndent("", strings.Repeat(" ", 2))
 	if err := encoder.Encode(b.originalPackageJSON); err != nil {
-		return errors.Wrap(err, "npm pack: failed to marshal JSON")
+		return fmt.Errorf("npm pack: failed to marshal JSON: %w", err)
 	}
 
-	if err := afero.WriteFile(fs, packageJSONName, packageJSONData.Bytes(), 0666); err != nil {
-		return errors.Wrap(err, "npm pack: failed to write package.json")
+	if err := afero.WriteFile(sourceFs, packageJSONName, packageJSONData.Bytes(), 0o666); err != nil {
+		return fmt.Errorf("npm pack: failed to write package.json: %w", err)
 	}
 
 	return nil
@@ -148,10 +156,10 @@ func Pack(fs afero.Fs, fis []hugofs.FileMetaInfo) error {
 
 func newPackageBuilder(source string, first io.Reader) *packageBuilder {
 	b := &packageBuilder{
-		devDependencies:         make(map[string]interface{}),
-		devDependenciesComments: make(map[string]interface{}),
-		dependencies:            make(map[string]interface{}),
-		dependenciesComments:    make(map[string]interface{}),
+		devDependencies:         make(map[string]any),
+		devDependenciesComments: make(map[string]any),
+		dependencies:            make(map[string]any),
+		dependenciesComments:    make(map[string]any),
 	}
 
 	m := b.unmarshal(first)
@@ -169,12 +177,12 @@ type packageBuilder struct {
 	err error
 
 	// The original package.hugo.json.
-	originalPackageJSON map[string]interface{}
+	originalPackageJSON map[string]any
 
-	devDependencies         map[string]interface{}
-	devDependenciesComments map[string]interface{}
-	dependencies            map[string]interface{}
-	dependenciesComments    map[string]interface{}
+	devDependencies         map[string]any
+	devDependenciesComments map[string]any
+	dependencies            map[string]any
+	dependenciesComments    map[string]any
 }
 
 func (b *packageBuilder) Add(source string, r io.Reader) *packageBuilder {
@@ -192,7 +200,7 @@ func (b *packageBuilder) Add(source string, r io.Reader) *packageBuilder {
 	return b
 }
 
-func (b *packageBuilder) addm(source string, m map[string]interface{}) {
+func (b *packageBuilder) addm(source string, m map[string]any) {
 	if source == "" {
 		source = "project"
 	}
@@ -225,8 +233,8 @@ func (b *packageBuilder) addm(source string, m map[string]interface{}) {
 	}
 }
 
-func (b *packageBuilder) unmarshal(r io.Reader) map[string]interface{} {
-	m := make(map[string]interface{})
+func (b *packageBuilder) unmarshal(r io.Reader) map[string]any {
+	m := make(map[string]any)
 	err := json.Unmarshal(helpers.ReaderToBytes(r), &m)
 	if err != nil {
 		b.err = err

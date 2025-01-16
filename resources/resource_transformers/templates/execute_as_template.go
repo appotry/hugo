@@ -15,12 +15,15 @@
 package templates
 
 import (
+	"context"
+	"fmt"
+
+	"github.com/gohugoio/hugo/common/paths"
 	"github.com/gohugoio/hugo/helpers"
 	"github.com/gohugoio/hugo/resources"
 	"github.com/gohugoio/hugo/resources/internal"
 	"github.com/gohugoio/hugo/resources/resource"
 	"github.com/gohugoio/hugo/tpl"
-	"github.com/pkg/errors"
 )
 
 // Client contains methods to perform template processing of Resource objects.
@@ -32,7 +35,7 @@ type Client struct {
 // New creates a new Client with the given specification.
 func New(rs *resources.Spec, t tpl.TemplatesProvider) *Client {
 	if rs == nil {
-		panic("must provice a resource Spec")
+		panic("must provide a resource Spec")
 	}
 	if t == nil {
 		panic("must provide a template provider")
@@ -44,7 +47,7 @@ type executeAsTemplateTransform struct {
 	rs         *resources.Spec
 	t          tpl.TemplatesProvider
 	targetPath string
-	data       interface{}
+	data       any
 }
 
 func (t *executeAsTemplateTransform) Key() internal.ResourceTransformationKey {
@@ -55,18 +58,18 @@ func (t *executeAsTemplateTransform) Transform(ctx *resources.ResourceTransforma
 	tplStr := helpers.ReaderToString(ctx.From)
 	templ, err := t.t.TextTmpl().Parse(ctx.InPath, tplStr)
 	if err != nil {
-		return errors.Wrapf(err, "failed to parse Resource %q as Template:", ctx.InPath)
+		return fmt.Errorf("failed to parse Resource %q as Template:: %w", ctx.InPath, err)
 	}
 
 	ctx.OutPath = t.targetPath
 
-	return t.t.Tmpl().Execute(templ, ctx.To, t.data)
+	return t.t.Tmpl().ExecuteWithContext(ctx.Ctx, templ, ctx.To, t.data)
 }
 
-func (c *Client) ExecuteAsTemplate(res resources.ResourceTransformer, targetPath string, data interface{}) (resource.Resource, error) {
-	return res.Transform(&executeAsTemplateTransform{
+func (c *Client) ExecuteAsTemplate(ctx context.Context, res resources.ResourceTransformer, targetPath string, data any) (resource.Resource, error) {
+	return res.TransformWithContext(ctx, &executeAsTemplateTransform{
 		rs:         c.rs,
-		targetPath: helpers.ToSlashTrimLeading(targetPath),
+		targetPath: paths.ToSlashTrimLeading(targetPath),
 		t:          c.t,
 		data:       data,
 	})

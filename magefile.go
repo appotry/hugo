@@ -1,3 +1,4 @@
+//go:build mage
 // +build mage
 
 package main
@@ -6,7 +7,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
@@ -24,10 +24,10 @@ import (
 
 const (
 	packageName  = "github.com/gohugoio/hugo"
-	noGitLdflags = "-X $PACKAGE/common/hugo.buildDate=$BUILD_DATE"
+	noGitLdflags = "-X github.com/gohugoio/hugo/common/hugo.vendorInfo=mage"
 )
 
-var ldflags = "-X $PACKAGE/common/hugo.commitHash=$COMMIT_HASH -X $PACKAGE/common/hugo.buildDate=$BUILD_DATE"
+var ldflags = noGitLdflags
 
 // allow user to override go executable by running as GOEXE=xxx make ... on unix-like systems
 var goexe = "go"
@@ -42,7 +42,7 @@ func init() {
 	os.Setenv("GO111MODULE", "on")
 }
 
-func runWith(env map[string]string, cmd string, inArgs ...interface{}) error {
+func runWith(env map[string]string, cmd string, inArgs ...any) error {
 	s := argsToStrings(inArgs...)
 	return sh.RunWith(env, cmd, s...)
 }
@@ -79,8 +79,7 @@ func flagEnv() map[string]string {
 // Generate autogen packages
 func Generate() error {
 	generatorPackages := []string{
-		"tpl/tplimpl/embedded/generate",
-		//"resources/page/generate",
+		"livereload/gen",
 	}
 
 	for _, pkg := range generatorPackages {
@@ -143,20 +142,17 @@ func Docker() error {
 
 // Run tests and linters
 func Check() {
-	if strings.Contains(runtime.Version(), "1.8") {
-		// Go 1.8 doesn't play along with go test ./... and /vendor.
-		// We could fix that, but that would take time.
-		fmt.Printf("Skip Check on %s\n", runtime.Version())
-		return
-	}
-
 	if runtime.GOARCH == "amd64" && runtime.GOOS != "darwin" {
 		mg.Deps(Test386)
 	} else {
 		fmt.Printf("Skip Test386 on %s and/or %s\n", runtime.GOARCH, runtime.GOOS)
 	}
 
-	mg.Deps(Fmt, Vet)
+	if isCi() && isDarwin() {
+		// Skip on macOS in CI (disk space issues)
+	} else {
+		mg.Deps(Fmt, Vet)
+	}
 
 	// don't run two tests in parallel, they saturate the CPUs anyway, and running two
 	// causes memory issues in CI.
@@ -168,66 +164,39 @@ func testGoFlags() string {
 		return ""
 	}
 
-	return "-test.short"
+	return "-timeout=1m"
 }
 
 // Run tests in 32-bit mode
 // Note that we don't run with the extended tag. Currently not supported in 32 bit.
 func Test386() error {
 	env := map[string]string{"GOARCH": "386", "GOFLAGS": testGoFlags()}
-	return runCmd(env, goexe, "test", "./...")
+	return runCmd(env, goexe, "test", "-p", "2", "./...")
 }
 
 // Run tests
 func Test() error {
 	env := map[string]string{"GOFLAGS": testGoFlags()}
-	return runCmd(env, goexe, "test", "./...", buildFlags(), "-tags", buildTags())
+	return runCmd(env, goexe, "test", "-p", "2", "./...", "-tags", buildTags())
 }
 
 // Run tests with race detector
 func TestRace() error {
 	env := map[string]string{"GOFLAGS": testGoFlags()}
-	return runCmd(env, goexe, "test", "-race", "./...", buildFlags(), "-tags", buildTags())
+	return runCmd(env, goexe, "test", "-p", "2", "-race", "./...", "-tags", buildTags())
 }
 
 // Run gofmt linter
 func Fmt() error {
-	if !isGoLatest() {
+	if !isGoLatest() && !isUnix() {
 		return nil
 	}
-	pkgs, err := hugoPackages()
+	s, err := sh.Output("./check_gofmt.sh")
 	if err != nil {
-		return err
+		fmt.Println(s)
+		return fmt.Errorf("gofmt needs to be run: %s", err)
 	}
-	failed := false
-	first := true
-	for _, pkg := range pkgs {
-		files, err := filepath.Glob(filepath.Join(pkg, "*.go"))
-		if err != nil {
-			return nil
-		}
-		for _, f := range files {
-			// gofmt doesn't exit with non-zero when it finds unformatted code
-			// so we have to explicitly look for output, and if we find any, we
-			// should fail this target.
-			s, err := sh.Output("gofmt", "-l", f)
-			if err != nil {
-				fmt.Printf("ERROR: running gofmt on %q: %v\n", f, err)
-				failed = true
-			}
-			if s != "" {
-				if first {
-					fmt.Println("The following files are not gofmt'ed:")
-					first = false
-				}
-				failed = true
-				fmt.Println(s)
-			}
-		}
-	}
-	if failed {
-		return errors.New("improperly formatted go files")
-	}
+
 	return nil
 }
 
@@ -274,7 +243,15 @@ func Lint() error {
 	return nil
 }
 
-//  Run go vet linter
+func isCi() bool {
+	return os.Getenv("CI") != ""
+}
+
+func isDarwin() bool {
+	return runtime.GOOS == "darwin"
+}
+
+// Run go vet linter
 func Vet() error {
 	if err := sh.Run(goexe, "vet", "./..."); err != nil {
 		return fmt.Errorf("error running go vet: %v", err)
@@ -304,7 +281,7 @@ func TestCoverHTML() error {
 		if err := sh.Run(goexe, "test", "-coverprofile="+cover, "-covermode=count", pkg); err != nil {
 			return err
 		}
-		b, err := ioutil.ReadFile(cover)
+		b, err := os.ReadFile(cover)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -323,7 +300,7 @@ func TestCoverHTML() error {
 	return sh.Run(goexe, "tool", "cover", "-html="+coverAll)
 }
 
-func runCmd(env map[string]string, cmd string, args ...interface{}) error {
+func runCmd(env map[string]string, cmd string, args ...any) error {
 	if mg.Verbose() {
 		return runWith(env, cmd, args...)
 	}
@@ -336,7 +313,11 @@ func runCmd(env map[string]string, cmd string, args ...interface{}) error {
 }
 
 func isGoLatest() bool {
-	return strings.Contains(runtime.Version(), "1.14")
+	return strings.Contains(runtime.Version(), "1.21")
+}
+
+func isUnix() bool {
+	return runtime.GOOS != "windows"
 }
 
 func isCI() bool {
@@ -353,14 +334,14 @@ func buildFlags() []string {
 func buildTags() string {
 	// To build the extended Hugo SCSS/SASS enabled version, build with
 	// HUGO_BUILD_TAGS=extended mage install etc.
-	// To build without `hugo deploy` for smaller binary, use HUGO_BUILD_TAGS=nodeploy
+	// To build with `hugo deploy`, use HUGO_BUILD_TAGS=withdeploy
 	if envtags := os.Getenv("HUGO_BUILD_TAGS"); envtags != "" {
 		return envtags
 	}
 	return "none"
 }
 
-func argsToStrings(v ...interface{}) []string {
+func argsToStrings(v ...any) []string {
 	var args []string
 	for _, arg := range v {
 		switch v := arg.(type) {
