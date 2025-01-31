@@ -14,13 +14,12 @@
 package collections
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"testing"
 
 	"github.com/gohugoio/hugo/common/maps"
-
-	"github.com/gohugoio/hugo/deps"
 )
 
 type stringsSlice []string
@@ -28,7 +27,7 @@ type stringsSlice []string
 func TestSort(t *testing.T) {
 	t.Parallel()
 
-	ns := New(&deps.Deps{})
+	ns := newNs()
 
 	type ts struct {
 		MyInt    int
@@ -40,10 +39,10 @@ func TestSort(t *testing.T) {
 	}
 
 	for i, test := range []struct {
-		seq         interface{}
-		sortByField interface{}
+		seq         any
+		sortByField any
 		sortAsc     string
-		expect      interface{}
+		expect      any
 	}{
 		{[]string{"class1", "class2", "class3"}, nil, "asc", []string{"class1", "class2", "class3"}},
 		{[]string{"class3", "class1", "class2"}, nil, "asc", []string{"class1", "class2", "class3"}},
@@ -205,17 +204,17 @@ func TestSort(t *testing.T) {
 		},
 		// interface slice with missing elements
 		{
-			[]interface{}{
-				map[interface{}]interface{}{"Title": "Foo", "Weight": 10},
-				map[interface{}]interface{}{"Title": "Bar"},
-				map[interface{}]interface{}{"Title": "Zap", "Weight": 5},
+			[]any{
+				map[any]any{"Title": "Foo", "Weight": 10},
+				map[any]any{"Title": "Bar"},
+				map[any]any{"Title": "Zap", "Weight": 5},
 			},
 			"Weight",
 			"asc",
-			[]interface{}{
-				map[interface{}]interface{}{"Title": "Bar"},
-				map[interface{}]interface{}{"Title": "Zap", "Weight": 5},
-				map[interface{}]interface{}{"Title": "Foo", "Weight": 10},
+			[]any{
+				map[any]any{"Title": "Bar"},
+				map[any]any{"Title": "Zap", "Weight": 5},
+				map[any]any{"Title": "Foo", "Weight": 10},
 			},
 		},
 		// test boolean values
@@ -239,12 +238,12 @@ func TestSort(t *testing.T) {
 		{nil, nil, "asc", false},
 	} {
 		t.Run(fmt.Sprintf("test%d", i), func(t *testing.T) {
-			var result interface{}
+			var result any
 			var err error
 			if test.sortByField == nil {
-				result, err = ns.Sort(test.seq)
+				result, err = ns.Sort(context.Background(), test.seq)
 			} else {
-				result, err = ns.Sort(test.seq, test.sortByField, test.sortAsc)
+				result, err = ns.Sort(context.Background(), test.seq, test.sortByField, test.sortAsc)
 			}
 
 			if b, ok := test.expect.(bool); ok && !b {
@@ -260,5 +259,13 @@ func TestSort(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func BenchmarkSortMap(b *testing.B) {
+	ns := newNs()
+	m := map[string]int{"1": 10, "2": 20, "3": 30, "4": 40, "5": 50}
+	for i := 0; i < b.N; i++ {
+		ns.Sort(context.Background(), m)
 	}
 }
