@@ -22,6 +22,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bep/logg"
 	"github.com/gohugoio/hugo/common/maps"
 
 	qt "github.com/frankban/quicktest"
@@ -35,7 +36,7 @@ func TestGetCSV(t *testing.T) {
 		sep     string
 		url     string
 		content string
-		expect  interface{}
+		expect  any
 	}{
 		// Remotes
 		{
@@ -71,7 +72,6 @@ func TestGetCSV(t *testing.T) {
 			false,
 		},
 	} {
-
 		c.Run(test.url, func(c *qt.C) {
 			msg := qt.Commentf("Test %d", i)
 
@@ -98,7 +98,7 @@ func TestGetCSV(t *testing.T) {
 
 			// Setup local test file for schema-less URLs
 			if !strings.Contains(test.url, ":") && !strings.HasPrefix(test.url, "fail/") {
-				f, err := ns.deps.Fs.Source.Create(filepath.Join(ns.deps.Cfg.GetString("workingDir"), test.url))
+				f, err := ns.deps.Fs.Source.Create(filepath.Join(ns.deps.Conf.BaseConfig().WorkingDir, test.url))
 				c.Assert(err, qt.IsNil, msg)
 				f.WriteString(test.content)
 				f.Close()
@@ -108,17 +108,16 @@ func TestGetCSV(t *testing.T) {
 			got, err := ns.GetCSV(test.sep, test.url)
 
 			if _, ok := test.expect.(bool); ok {
-				c.Assert(int(ns.deps.Log.LogCounters().ErrorCounter.Count()), qt.Equals, 1)
+				c.Assert(int(ns.deps.Log.LoggCount(logg.LevelError)), qt.Equals, 1)
 				c.Assert(got, qt.IsNil)
 				return
 			}
 
 			c.Assert(err, qt.IsNil, msg)
-			c.Assert(int(ns.deps.Log.LogCounters().ErrorCounter.Count()), qt.Equals, 0)
+			c.Assert(int(ns.deps.Log.LoggCount(logg.LevelError)), qt.Equals, 0)
 			c.Assert(got, qt.Not(qt.IsNil), msg)
 			c.Assert(got, qt.DeepEquals, test.expect, msg)
 		})
-
 	}
 }
 
@@ -129,12 +128,12 @@ func TestGetJSON(t *testing.T) {
 	for i, test := range []struct {
 		url     string
 		content string
-		expect  interface{}
+		expect  any
 	}{
 		{
 			`http://success/`,
 			`{"gomeetup":["Sydney","San Francisco","Stockholm"]}`,
-			map[string]interface{}{"gomeetup": []interface{}{"Sydney", "San Francisco", "Stockholm"}},
+			map[string]any{"gomeetup": []any{"Sydney", "San Francisco", "Stockholm"}},
 		},
 		{
 			`http://malformed/`,
@@ -150,7 +149,7 @@ func TestGetJSON(t *testing.T) {
 		{
 			"pass/semi",
 			`{"gomeetup":["Sydney","San Francisco","Stockholm"]}`,
-			map[string]interface{}{"gomeetup": []interface{}{"Sydney", "San Francisco", "Stockholm"}},
+			map[string]any{"gomeetup": []any{"Sydney", "San Francisco", "Stockholm"}},
 		},
 		{
 			"fail/no-file",
@@ -160,12 +159,10 @@ func TestGetJSON(t *testing.T) {
 		{
 			`pass/üńīçøðê-url.json`,
 			`{"gomeetup":["Sydney","San Francisco","Stockholm"]}`,
-			map[string]interface{}{"gomeetup": []interface{}{"Sydney", "San Francisco", "Stockholm"}},
+			map[string]any{"gomeetup": []any{"Sydney", "San Francisco", "Stockholm"}},
 		},
 	} {
-
 		c.Run(test.url, func(c *qt.C) {
-
 			msg := qt.Commentf("Test %d", i)
 			ns := newTestNs()
 
@@ -190,7 +187,7 @@ func TestGetJSON(t *testing.T) {
 
 			// Setup local test file for schema-less URLs
 			if !strings.Contains(test.url, ":") && !strings.HasPrefix(test.url, "fail/") {
-				f, err := ns.deps.Fs.Source.Create(filepath.Join(ns.deps.Cfg.GetString("workingDir"), test.url))
+				f, err := ns.deps.Fs.Source.Create(filepath.Join(ns.deps.Conf.BaseConfig().WorkingDir, test.url))
 				c.Assert(err, qt.IsNil, msg)
 				f.WriteString(test.content)
 				f.Close()
@@ -200,14 +197,13 @@ func TestGetJSON(t *testing.T) {
 			got, _ := ns.GetJSON(test.url)
 
 			if _, ok := test.expect.(bool); ok {
-				c.Assert(int(ns.deps.Log.LogCounters().ErrorCounter.Count()), qt.Equals, 1)
+				c.Assert(int(ns.deps.Log.LoggCount(logg.LevelError)), qt.Equals, 1)
 				return
 			}
 
-			c.Assert(int(ns.deps.Log.LogCounters().ErrorCounter.Count()), qt.Equals, 0, msg)
+			c.Assert(int(ns.deps.Log.LoggCount(logg.LevelError)), qt.Equals, 0, msg)
 			c.Assert(got, qt.Not(qt.IsNil), msg)
 			c.Assert(got, qt.DeepEquals, test.expect)
-
 		})
 	}
 }
@@ -218,12 +214,12 @@ func TestHeaders(t *testing.T) {
 
 	for _, test := range []struct {
 		name    string
-		headers interface{}
+		headers any
 		assert  func(c *qt.C, headers string)
 	}{
 		{
 			`Misc header variants`,
-			map[string]interface{}{
+			map[string]any{
 				"Accept-Charset": "utf-8",
 				"Max-forwards":   "10",
 				"X-Int":          32,
@@ -254,7 +250,7 @@ func TestHeaders(t *testing.T) {
 		},
 		{
 			`Override User-Agent`,
-			map[string]interface{}{
+			map[string]any{
 				"User-Agent": "007",
 			},
 			func(c *qt.C, headers string) {
@@ -262,9 +258,7 @@ func TestHeaders(t *testing.T) {
 			},
 		},
 	} {
-
 		c.Run(test.name, func(c *qt.C) {
-
 			ns := newTestNs()
 
 			// Setup HTTP test server
@@ -274,43 +268,40 @@ func TestHeaders(t *testing.T) {
 				c.Assert(r.URL.String(), qt.Equals, "http://gohugo.io/api?foo")
 				w.Write([]byte("{}"))
 				r.Header.Write(&headers)
-
 			})
 			defer func() { srv.Close() }()
 
-			testFunc := func(fn func(args ...interface{}) error) {
+			testFunc := func(fn func(args ...any) error) {
 				defer headers.Reset()
 				err := fn("http://example.org/api", "?foo", test.headers)
 
 				c.Assert(err, qt.IsNil)
-				c.Assert(int(ns.deps.Log.LogCounters().ErrorCounter.Count()), qt.Equals, 0)
+				c.Assert(int(ns.deps.Log.LoggCount(logg.LevelError)), qt.Equals, 0)
 				test.assert(c, headers.String())
 			}
 
-			testFunc(func(args ...interface{}) error {
+			testFunc(func(args ...any) error {
 				_, err := ns.GetJSON(args...)
 				return err
 			})
-			testFunc(func(args ...interface{}) error {
+			testFunc(func(args ...any) error {
 				_, err := ns.GetCSV(",", args...)
 				return err
 			})
-
 		})
-
 	}
 }
 
 func TestToURLAndHeaders(t *testing.T) {
 	t.Parallel()
 	c := qt.New(t)
-	url, headers := toURLAndHeaders([]interface{}{"https://foo?id=", 32})
+	url, headers := toURLAndHeaders([]any{"https://foo?id=", 32})
 	c.Assert(url, qt.Equals, "https://foo?id=32")
 	c.Assert(headers, qt.IsNil)
 
-	url, headers = toURLAndHeaders([]interface{}{"https://foo?id=", 32, map[string]interface{}{"a": "b"}})
+	url, headers = toURLAndHeaders([]any{"https://foo?id=", 32, map[string]any{"a": "b"}})
 	c.Assert(url, qt.Equals, "https://foo?id=32")
-	c.Assert(headers, qt.DeepEquals, map[string]interface{}{"a": "b"})
+	c.Assert(headers, qt.DeepEquals, map[string]any{"a": "b"})
 }
 
 func TestParseCSV(t *testing.T) {

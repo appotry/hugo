@@ -32,7 +32,7 @@ const (
 	tomlDelimLf = "+++\n"
 )
 
-func InterfaceToConfig(in interface{}, format metadecoders.Format, w io.Writer) error {
+func InterfaceToConfig(in any, format metadecoders.Format, w io.Writer) error {
 	if in == nil {
 		return errors.New("input was nil")
 	}
@@ -77,7 +77,7 @@ func InterfaceToConfig(in interface{}, format metadecoders.Format, w io.Writer) 
 	}
 }
 
-func InterfaceToFrontMatter(in interface{}, format metadecoders.Format, w io.Writer) error {
+func InterfaceToFrontMatter(in any, format metadecoders.Format, w io.Writer) error {
 	if in == nil {
 		return errors.New("input was nil")
 	}
@@ -104,12 +104,11 @@ func InterfaceToFrontMatter(in interface{}, format metadecoders.Format, w io.Wri
 		}
 
 		err = InterfaceToConfig(in, format, w)
-
 		if err != nil {
 			return err
 		}
 
-		_, err = w.Write([]byte("\n" + tomlDelimLf))
+		_, err = w.Write([]byte(tomlDelimLf))
 		return err
 
 	default:

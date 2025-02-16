@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -17,8 +16,8 @@ import (
 )
 
 func main() {
-	// TODO(bep) git checkout tag
-	// The current is built with Go version 2f0da6d9e29d9b9d5a4d10427ca9f71d12bbacc8 / go1.16
+	// The current is built with 3901409b5d [release-branch.go1.24] go1.24.0
+	// TODO(bep) preserve the staticcheck.conf file.
 	fmt.Println("Forking ...")
 	defer fmt.Println("Done ...")
 
@@ -40,7 +39,7 @@ func main() {
 
 const (
 	// TODO(bep)
-	goSource = "/Users/bep/dev/go/dump/go/src"
+	goSource = "/Users/bep/dev/go/misc/go/src"
 	forkRoot = "../../tpl/internal/go_templates"
 )
 
@@ -164,11 +163,15 @@ func copyGoPackage(dst, src string) {
 
 func doWithGoFiles(dir string,
 	rewrite func(name string),
-	transform func(name, in string) string) {
+	transform func(name, in string) string,
+) {
 	if rewrite == nil && transform == nil {
 		return
 	}
 	must(filepath.Walk(filepath.Join(forkRoot, dir), func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
 		if info.IsDir() {
 			return nil
 		}
@@ -187,7 +190,7 @@ func doWithGoFiles(dir string,
 			return nil
 		}
 
-		data, err := ioutil.ReadFile(path)
+		data, err := os.ReadFile(path)
 		must(err)
 		f, err := os.Create(path)
 		must(err)
@@ -213,6 +216,7 @@ func rewrite(filename, rule string) {
 }
 
 func goimports(dir string) {
+	// Needs go install golang.org/x/tools/cmd/goimports@latest
 	cmf, _ := hexec.SafeCommand("goimports", "-w", dir)
 	out, err := cmf.CombinedOutput()
 	if err != nil {

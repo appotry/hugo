@@ -1,115 +1,74 @@
 ---
-title: Hugo Pipes Introduction
-linkTitle: Hugo Pipes
+title: Hugo Pipes
+linkTitle: Introduction
 description: Hugo Pipes is Hugo's asset processing set of functions.
-date: 2018-07-14
-publishdate: 2018-07-14
-lastmod: 2018-07-14
 categories: [asset management]
 keywords: []
 menu:
   docs:
-    parent: "pipes"
+    parent: hugo-pipes
     weight: 20
-weight: 01
-sections_weight: 01
-draft: false
+weight: 20
 toc: true
 aliases: [/assets/]
 ---
 
-## Get Resource with resources.Get
+## Find resources in assets
 
-In order to process an asset with Hugo Pipes, it must be retrieved as a `Resource` using `resources.Get`. The first argument can be either a local the path to file relative to the `asset` directory/directories or a remote URL.
+This is about global and remote resources.
 
-```go-html-template
-{{ $local := resources.Get "sass/main.scss" }}
-{{ $remote := resources.Get "https://www.example.com/styles.scss" }}
-```
+global resource
+: A file within the `assets` directory, or within any directory [mounted] to the `assets` directory.
 
-`resources.Get` will always return `nil` if the resource could not be found.
+remote resource
+: A file on a remote server, accessible via HTTP or HTTPS.
 
-### Error Handling
+For `.Page` scoped resources, see the [page resources] section.
 
-{{< new-in "0.90.1" >}}
+[mounted]: /hugo-modules/configuration/#module-configuration-mounts
+[page resources]: /content-management/page-resources/
 
-The return value from `resources.Get` includes an `.Err` method that will return an error if the call failed. If you want to just log any error as a `WARNING` you can use a construct similar to the one below.
+## Get a resource
 
-```go-html-template
-{{ with resources.Get "https://gohugo.io/images/gohugoio-card-1.png" }}
-  {{ with .Err }}
-    {{ warnf "%s" . }}
-  {{ else }}
-    <img src="{{ .RelPermalink }}" width="{{ .Width }}" height="{{ .Height }}" alt="">
-  {{ end }}
-{{ end }}
-```
+In order to process an asset with Hugo Pipes, it must be retrieved as a resource.
 
-Note that if you do not handle `.Err` yourself, Hugo will fail the build the first time you start using the `Resource` object.
+For global resources, use:
 
-### Remote Options
+- [`resources.ByType`](/functions/resources/bytype/)
+- [`resources.Get`](/functions/resources/get/)
+- [`resources.GetMatch`](/functions/resources/getmatch/)
+- [`resources.Match`](/functions/resources/match/)
 
-When fetching a remote `Resource`, `resources.Get` takes an optional options map as the last argument, e.g.:
+For remote resources, use:
 
-```go-html-template
-{{ $resource := resources.Get "https://example.org/api" (dict "headers" (dict "Authorization" "Bearer abcd"))  }}
-```
+- [`resources.GetRemote`](/functions/resources/getremote/)
 
-If you need multiple values for the same header key, use a slice:
+See the [GoDoc Page](https://pkg.go.dev/github.com/gohugoio/hugo/tpl/resources) for the `resources` package for an up to date overview of all template functions in this namespace.
 
-```go-html-template
-{{ $resource := resources.Get "https://example.org/api"  (dict "headers" (dict "X-List" (slice "a" "b" "c")))  }}
-```
+## Copy a resource
 
-You can also change the request method and set the request body:
-
-```go-html-template
-{{ $postResponse := resources.Get "https://example.org/api"  (dict 
-    "method" "post"
-    "body" `{"complete": true}` 
-    "headers" (dict 
-        "Content-Type" "application/json"
-    )
-)}}
-```
-
-### Caching of Remote Resources
-
-Remote resources fetched with `resources.Get` will be cached on disk. See [Configure File Caches](/getting-started/configuration/#configure-file-caches) for details.
+See the [`resources.Copy`](/functions/resources/copy/) function.
 
 ## Asset directory
 
-Asset files must be stored in the asset directory. This is `/assets` by default, but can be configured via the configuration file's `assetDir` key.
+Asset files must be stored in the asset directory. This is `assets` by default, but can be configured via the configuration file's `assetDir` key.
 
+## Asset publishing
 
-### Asset Publishing
-
-Assets will only be published (to `/public`) if `.Permalink` or `.RelPermalink` is used. You can use `.Content` to inline the asset.
+Hugo publishes assets to the `publishDir` (typically `public`) when you invoke `.Permalink`, `.RelPermalink`, or `.Publish`. You can use `.Content` to inline the asset.
 
 ## Go Pipes
 
 For improved readability, the Hugo Pipes examples of this documentation will be written using [Go Pipes](/templates/introduction/#pipes):
 
 ```go-html-template
-{{ $style := resources.Get "sass/main.scss" | resources.ToCSS | resources.Minify | resources.Fingerprint }}
-<link rel="stylesheet" href="{{ $style.Permalink }}">
-```
-
-## Method aliases
-
-Each Hugo Pipes `resources` transformation method uses a __camelCased__ alias (`toCSS` for `resources.ToCSS`).
-Non-transformation methods deprived of such aliases are `resources.Get`, `resources.FromString`, `resources.ExecuteAsTemplate` and `resources.Concat`.
-
-The example above can therefore also be written as follows:
-
-```go-html-template
-{{ $style := resources.Get "sass/main.scss" | toCSS | minify | fingerprint }}
+{{ $style := resources.Get "sass/main.scss" | css.Sass | resources.Minify | resources.Fingerprint }}
 <link rel="stylesheet" href="{{ $style.Permalink }}">
 ```
 
 ## Caching
 
-Hugo Pipes invocations are cached based on the entire _pipe chain_.
+Hugo Pipes invocations are cached based on the entire *pipe chain*.
 
 An example of a pipe chain is:
 
