@@ -16,6 +16,7 @@ package pagemeta
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/gohugoio/hugo/htesting/hqt"
 
@@ -36,11 +37,11 @@ list = %s
 publishResources = true`
 
 	for _, test := range []struct {
-		args   []interface{}
+		args   []any
 		expect BuildConfig
 	}{
 		{
-			[]interface{}{"true", "true"},
+			[]any{"true", "true"},
 			BuildConfig{
 				Render:           Always,
 				List:             Always,
@@ -48,31 +49,31 @@ publishResources = true`
 				set:              true,
 			},
 		},
-		{[]interface{}{"true", "false"}, BuildConfig{
+		{[]any{"true", "false"}, BuildConfig{
 			Render:           Always,
 			List:             Never,
 			PublishResources: true,
 			set:              true,
 		}},
-		{[]interface{}{`"always"`, `"always"`}, BuildConfig{
+		{[]any{`"always"`, `"always"`}, BuildConfig{
 			Render:           Always,
 			List:             Always,
 			PublishResources: true,
 			set:              true,
 		}},
-		{[]interface{}{`"never"`, `"never"`}, BuildConfig{
+		{[]any{`"never"`, `"never"`}, BuildConfig{
 			Render:           Never,
 			List:             Never,
 			PublishResources: true,
 			set:              true,
 		}},
-		{[]interface{}{`"link"`, `"local"`}, BuildConfig{
+		{[]any{`"link"`, `"local"`}, BuildConfig{
 			Render:           Link,
 			List:             ListLocally,
 			PublishResources: true,
 			set:              true,
 		}},
-		{[]interface{}{`"always"`, `"asdfadf"`}, BuildConfig{
+		{[]any{`"always"`, `"asdfadf"`}, BuildConfig{
 			Render:           Always,
 			List:             Always,
 			PublishResources: true,
@@ -89,4 +90,47 @@ publishResources = true`
 		c.Assert(bcfg, eq, test.expect)
 
 	}
+}
+
+func TestDateAndSlugFromBaseFilename(t *testing.T) {
+	t.Parallel()
+
+	c := qt.New(t)
+
+	tests := []struct {
+		name string
+		date string
+		slug string
+	}{
+		{"page.md", "0001-01-01", ""},
+		{"2012-09-12-page.md", "2012-09-12", "page"},
+		{"2018-02-28-page.md", "2018-02-28", "page"},
+		{"2018-02-28_page.md", "2018-02-28", "page"},
+		{"2018-02-28 page.md", "2018-02-28", "page"},
+		{"2018-02-28page.md", "2018-02-28", "page"},
+		{"2018-02-28-.md", "2018-02-28", ""},
+		{"2018-02-28-.md", "2018-02-28", ""},
+		{"2018-02-28.md", "2018-02-28", ""},
+		{"2018-02-28-page", "2018-02-28", "page"},
+		{"2012-9-12-page.md", "0001-01-01", ""},
+		{"asdfasdf.md", "0001-01-01", ""},
+	}
+
+	for _, test := range tests {
+		expecteFDate, err := time.Parse("2006-01-02", test.date)
+		c.Assert(err, qt.IsNil)
+
+		gotDate, gotSlug := dateAndSlugFromBaseFilename(time.UTC, test.name)
+
+		c.Assert(gotDate, qt.Equals, expecteFDate)
+		c.Assert(gotSlug, qt.Equals, test.slug)
+
+	}
+}
+
+func TestExpandDefaultValues(t *testing.T) {
+	c := qt.New(t)
+	c.Assert(expandDefaultValues([]string{"a", ":default", "d"}, []string{"b", "c"}), qt.DeepEquals, []string{"a", "b", "c", "d"})
+	c.Assert(expandDefaultValues([]string{"a", "b", "c"}, []string{"a", "b", "c"}), qt.DeepEquals, []string{"a", "b", "c"})
+	c.Assert(expandDefaultValues([]string{":default", "a", ":default", "d"}, []string{"b", "c"}), qt.DeepEquals, []string{"b", "c", "a", "b", "c", "d"})
 }

@@ -3,9 +3,9 @@ package lang
 import (
 	"testing"
 
-	translators "github.com/gohugoio/localescompressed"
 	qt "github.com/frankban/quicktest"
 	"github.com/gohugoio/hugo/deps"
+	translators "github.com/gohugoio/localescompressed"
 )
 
 func TestNumFmt(t *testing.T) {
@@ -41,8 +41,8 @@ func TestNumFmt(t *testing.T) {
 		{6, -12345.6789, "-|,| ", "|", "-12 345,678900"},
 
 		// Arabic, ar_AE
-		{6, -12345.6789, "‏- ٫ ٬", "", "‏-12٬345٫678900"},
-		{6, -12345.6789, "‏-|٫| ", "|", "‏-12 345٫678900"},
+		{6, -12345.6789, "\u200f- ٫ ٬", "", "\u200f-12٬345٫678900"},
+		{6, -12345.6789, "\u200f-|٫| ", "|", "\u200f-12 345٫678900"},
 	}
 
 	for _, cas := range cases {
@@ -65,7 +65,6 @@ func TestNumFmt(t *testing.T) {
 }
 
 func TestFormatNumbers(t *testing.T) {
-
 	c := qt.New(t)
 
 	nsNn := New(&deps.Deps{}, translators.GetTranslator("nn"))
@@ -103,5 +102,34 @@ func TestFormatNumbers(t *testing.T) {
 		c.Assert(err, qt.IsNil)
 		c.Assert(got, qt.Equals, "$20,000.00")
 	})
+}
 
+// Issue 9446
+func TestLanguageKeyFormat(t *testing.T) {
+	c := qt.New(t)
+
+	nsUnderscoreUpper := New(&deps.Deps{}, translators.GetTranslator("es_ES"))
+	nsUnderscoreLower := New(&deps.Deps{}, translators.GetTranslator("es_es"))
+	nsHyphenUpper := New(&deps.Deps{}, translators.GetTranslator("es-ES"))
+	nsHyphenLower := New(&deps.Deps{}, translators.GetTranslator("es-es"))
+	pi := 3.14159265359
+
+	c.Run("FormatNumber", func(c *qt.C) {
+		c.Parallel()
+		got, err := nsUnderscoreUpper.FormatNumber(3, pi)
+		c.Assert(err, qt.IsNil)
+		c.Assert(got, qt.Equals, "3,142")
+
+		got, err = nsUnderscoreLower.FormatNumber(3, pi)
+		c.Assert(err, qt.IsNil)
+		c.Assert(got, qt.Equals, "3,142")
+
+		got, err = nsHyphenUpper.FormatNumber(3, pi)
+		c.Assert(err, qt.IsNil)
+		c.Assert(got, qt.Equals, "3,142")
+
+		got, err = nsHyphenLower.FormatNumber(3, pi)
+		c.Assert(err, qt.IsNil)
+		c.Assert(got, qt.Equals, "3,142")
+	})
 }

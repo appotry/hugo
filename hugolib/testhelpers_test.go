@@ -2,22 +2,21 @@ package hugolib
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"image/jpeg"
 	"io"
+	"io/fs"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
-	"sort"
-	"strconv"
 	"strings"
 	"testing"
 	"text/template"
 	"time"
-	"unicode/utf8"
 
+	"github.com/gohugoio/hugo/config/allconfig"
 	"github.com/gohugoio/hugo/config/security"
 	"github.com/gohugoio/hugo/htesting"
 
@@ -27,11 +26,10 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/gohugoio/hugo/parser"
-	"github.com/pkg/errors"
 
 	"github.com/fsnotify/fsnotify"
-	"github.com/gohugoio/hugo/common/herrors"
 	"github.com/gohugoio/hugo/common/hexec"
+	"github.com/gohugoio/hugo/common/loggers"
 	"github.com/gohugoio/hugo/common/maps"
 	"github.com/gohugoio/hugo/config"
 	"github.com/gohugoio/hugo/deps"
@@ -41,24 +39,24 @@ import (
 	"github.com/spf13/cast"
 
 	"github.com/gohugoio/hugo/helpers"
-	"github.com/gohugoio/hugo/tpl"
 
 	"github.com/gohugoio/hugo/resources/resource"
 
 	qt "github.com/frankban/quicktest"
-	"github.com/gohugoio/hugo/common/loggers"
 	"github.com/gohugoio/hugo/hugofs"
 )
 
 var (
 	deepEqualsPages         = qt.CmpEquals(cmp.Comparer(func(p1, p2 *pageState) bool { return p1 == p2 }))
 	deepEqualsOutputFormats = qt.CmpEquals(cmp.Comparer(func(o1, o2 output.Format) bool {
-		return o1.Name == o2.Name && o1.MediaType.Type() == o2.MediaType.Type()
+		return o1.Name == o2.Name && o1.MediaType.Type == o2.MediaType.Type
 	}))
 )
 
 type sitesBuilder struct {
 	Cfg     config.Provider
+	Configs *allconfig.Configs
+
 	environ []string
 
 	Fs      *hugofs.Fs
@@ -114,7 +112,9 @@ type filenameContent struct {
 
 func newTestSitesBuilder(t testing.TB) *sitesBuilder {
 	v := config.New()
-	fs := hugofs.NewMem(v)
+	v.Set("publishDir", "public")
+	v.Set("disableLiveReload", true)
+	fs := hugofs.NewFromOld(afero.NewMemMapFs(), v)
 
 	litterOptions := litter.Options{
 		HidePrivateFields: true,
@@ -138,11 +138,11 @@ func newTestSitesBuilderFromDepsCfg(t testing.TB, d deps.DepsCfg) *sitesBuilder 
 	}
 
 	b := &sitesBuilder{T: t, C: c, depsCfg: d, Fs: d.Fs, dumper: litterOptions, rnd: rand.New(rand.NewSource(time.Now().Unix()))}
-	workingDir := d.Cfg.GetString("workingDir")
+	workingDir := d.Configs.LoadingInfo.BaseConfig.WorkingDir
 
 	b.WithWorkingDir(workingDir)
 
-	return b.WithViper(d.Cfg.(config.Provider))
+	return b
 }
 
 func (s *sitesBuilder) Running() *sitesBuilder {
@@ -172,7 +172,7 @@ func (s *sitesBuilder) WithEnviron(env ...string) *sitesBuilder {
 	return s
 }
 
-func (s *sitesBuilder) WithConfigTemplate(data interface{}, format, configTemplate string) *sitesBuilder {
+func (s *sitesBuilder) WithConfigTemplate(data any, format, configTemplate string) *sitesBuilder {
 	s.T.Helper()
 
 	if format == "" {
@@ -258,10 +258,9 @@ id = "UA-ga_id"
 disable = false
 [privacy.googleAnalytics]
 respectDoNotTrack = true
-anonymizeIP = true
 [privacy.instagram]
 simple = true
-[privacy.twitter]
+[privacy.x]
 enableDNT = true
 [privacy.vimeo]
 disable = false
@@ -278,10 +277,10 @@ func (s *sitesBuilder) WithSimpleConfigFile() *sitesBuilder {
 
 func (s *sitesBuilder) WithSimpleConfigFileAndBaseURL(baseURL string) *sitesBuilder {
 	s.T.Helper()
-	return s.WithSimpleConfigFileAndSettings(map[string]interface{}{"baseURL": baseURL})
+	return s.WithSimpleConfigFileAndSettings(map[string]any{"baseURL": baseURL})
 }
 
-func (s *sitesBuilder) WithSimpleConfigFileAndSettings(settings interface{}) *sitesBuilder {
+func (s *sitesBuilder) WithSimpleConfigFileAndSettings(settings any) *sitesBuilder {
 	s.T.Helper()
 	var buf bytes.Buffer
 	parser.InterfaceToConfig(settings, metadecoders.TOML, &buf)
@@ -293,16 +292,15 @@ func (s *sitesBuilder) WithDefaultMultiSiteConfig() *sitesBuilder {
 	defaultMultiSiteConfig := `
 baseURL = "http://example.com/blog"
 
-paginate = 1
 disablePathToLower = true
 defaultContentLanguage = "en"
 defaultContentLanguageInSubdir = true
 
+[pagination]
+pagerSize = 1
+
 [permalinks]
 other = "/somewhere/else/:filename"
-
-[blackfriday]
-angledQuotes = true
 
 [Taxonomies]
 tag = "tags"
@@ -312,8 +310,6 @@ tag = "tags"
 weight = 10
 title = "In English"
 languageName = "English"
-[Languages.en.blackfriday]
-angledQuotes = false
 [[Languages.en.menu.main]]
 url    = "/"
 name   = "Home"
@@ -330,7 +326,8 @@ plaque = "plaques"
 weight = 30
 title = "På nynorsk"
 languageName = "Nynorsk"
-paginatePath = "side"
+[Languages.nn.pagination]
+path = "side"
 [Languages.nn.Taxonomies]
 lag = "lag"
 [[Languages.nn.menu.main]]
@@ -342,7 +339,8 @@ weight = 1
 weight = 40
 title = "På bokmål"
 languageName = "Bokmål"
-paginatePath = "side"
+[Languages.nb.pagination]
+path = "side"
 [Languages.nb.Taxonomies]
 lag = "lag"
 ` + commonConfigSections
@@ -470,9 +468,11 @@ func (s *sitesBuilder) writeFilePairs(folder string, files []filenameContent) *s
 
 func (s *sitesBuilder) CreateSites() *sitesBuilder {
 	if err := s.CreateSitesE(); err != nil {
-		herrors.PrintStackTraceFromErr(err)
 		s.Fatalf("Failed to create sites: %s", err)
 	}
+
+	s.Assert(s.Fs.PublishDir, qt.IsNotNil)
+	s.Assert(s.Fs.WorkingDirReadOnly, qt.IsNotNil)
 
 	return s
 }
@@ -482,20 +482,29 @@ func (s *sitesBuilder) LoadConfig() error {
 		s.WithSimpleConfigFile()
 	}
 
-	cfg, _, err := LoadConfig(ConfigSourceDescriptor{
-		WorkingDir: s.workingDir,
-		Fs:         s.Fs.Source,
-		Logger:     s.logger,
-		Environ:    s.environ,
-		Filename:   "config." + s.configFormat,
-	}, func(cfg config.Provider) error {
-		return nil
+	flags := config.New()
+	flags.Set("internal", map[string]any{
+		"running": s.running,
+		"watch":   s.running,
+	})
+
+	if s.workingDir != "" {
+		flags.Set("workingDir", s.workingDir)
+	}
+
+	res, err := allconfig.LoadConfig(allconfig.ConfigSourceDescriptor{
+		Fs:       s.Fs.Source,
+		Logger:   s.logger,
+		Flags:    flags,
+		Environ:  s.environ,
+		Filename: "config." + s.configFormat,
 	})
 	if err != nil {
 		return err
 	}
 
-	s.Cfg = cfg
+	s.Cfg = res.LoadingInfo.Cfg
+	s.Configs = res
 
 	return nil
 }
@@ -512,8 +521,8 @@ func (s *sitesBuilder) CreateSitesE() error {
 				"data",
 				"i18n",
 			} {
-				if err := os.MkdirAll(filepath.Join(s.workingDir, dir), 0777); err != nil {
-					return errors.Wrapf(err, "failed to create %q", dir)
+				if err := os.MkdirAll(filepath.Join(s.workingDir, dir), 0o777); err != nil {
+					return fmt.Errorf("failed to create %q: %w", dir, err)
 				}
 			}
 		}
@@ -532,20 +541,21 @@ func (s *sitesBuilder) CreateSitesE() error {
 	}
 
 	if err := s.LoadConfig(); err != nil {
-		return errors.Wrap(err, "failed to load config")
+		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	s.Fs.Destination = hugofs.NewCreateCountingFs(s.Fs.Destination)
+	s.Fs.PublishDir = hugofs.NewCreateCountingFs(s.Fs.PublishDir)
 
 	depsCfg := s.depsCfg
 	depsCfg.Fs = s.Fs
-	depsCfg.Cfg = s.Cfg
-	depsCfg.Logger = s.logger
-	depsCfg.Running = s.running
+	if depsCfg.Configs.IsZero() {
+		depsCfg.Configs = s.Configs
+	}
+	depsCfg.TestLogger = s.logger
 
 	sites, err := NewHugoSites(depsCfg)
 	if err != nil {
-		return errors.Wrap(err, "failed to create sites")
+		return fmt.Errorf("failed to create sites: %w", err)
 	}
 	s.H = sites
 
@@ -608,7 +618,6 @@ func (s *sitesBuilder) build(cfg BuildCfg, shouldFail bool) *sitesBuilder {
 		}
 	}
 	if err != nil && !shouldFail {
-		herrors.PrintStackTraceFromErr(err)
 		s.Fatalf("Build failed: %s", err)
 	} else if err == nil && shouldFail {
 		s.Fatalf("Expected error")
@@ -644,8 +653,8 @@ date: "2018-02-28"
 		defaultTemplates = []string{
 			"_default/single.html", "Single: {{ .Title }}|{{ i18n \"hello\" }}|{{.Language.Lang}}|RelPermalink: {{ .RelPermalink }}|Permalink: {{ .Permalink }}|{{ .Content }}|Resources: {{ range .Resources }}{{ .MediaType }}: {{ .RelPermalink}} -- {{ end }}|Summary: {{ .Summary }}|Truncated: {{ .Truncated }}|Parent: {{ .Parent.Title }}",
 			"_default/list.html", "List Page " + listTemplateCommon,
-			"index.html", "{{ $p := .Paginator }}Default Home Page {{ $p.PageNumber }}: {{ .Title }}|{{ .IsHome }}|{{ i18n \"hello\" }}|{{ .Permalink }}|{{  .Site.Data.hugo.slogan }}|String Resource: {{ ( \"Hugo Pipes\" | resources.FromString \"text/pipes.txt\").RelPermalink  }}",
-			"index.fr.html", "{{ $p := .Paginator }}French Home Page {{ $p.PageNumber }}: {{ .Title }}|{{ .IsHome }}|{{ i18n \"hello\" }}|{{ .Permalink }}|{{  .Site.Data.hugo.slogan }}|String Resource: {{ ( \"Hugo Pipes\" | resources.FromString \"text/pipes.txt\").RelPermalink  }}",
+			"index.html", "{{ $p := .Paginator }}Default Home Page {{ $p.PageNumber }}: {{ .Title }}|{{ .IsHome }}|{{ i18n \"hello\" }}|{{ .Permalink }}|{{  .Site.Data.hugo.slogan }}|String Resource: {{ ( \"Hugo Pipes\" | resources.FromString \"text/pipes.txt\").RelPermalink  }}|String Resource Permalink: {{ ( \"Hugo Pipes\" | resources.FromString \"text/pipes.txt\").Permalink  }}",
+			"index.fr.html", "{{ $p := .Paginator }}French Home Page {{ $p.PageNumber }}: {{ .Title }}|{{ .IsHome }}|{{ i18n \"hello\" }}|{{ .Permalink }}|{{  .Site.Data.hugo.slogan }}|String Resource: {{ ( \"Hugo Pipes\" | resources.FromString \"text/pipes.txt\").RelPermalink  }}|String Resource Permalink: {{ ( \"Hugo Pipes\" | resources.FromString \"text/pipes.txt\").Permalink  }}",
 			"_default/terms.html", "Taxonomy Term Page " + listTemplateCommon,
 			"_default/taxonomy.html", "Taxonomy List Page " + listTemplateCommon,
 			// Shortcodes
@@ -689,7 +698,7 @@ hello:
 	}
 }
 
-func (s *sitesBuilder) Fatalf(format string, args ...interface{}) {
+func (s *sitesBuilder) Fatalf(format string, args ...any) {
 	s.T.Helper()
 	s.T.Fatalf(format, args...)
 }
@@ -700,6 +709,37 @@ func (s *sitesBuilder) AssertFileContentFn(filename string, f func(s string) boo
 	if !f(content) {
 		s.Fatalf("Assert failed for %q in content\n%s", filename, content)
 	}
+}
+
+// Helper to migrate tests to new format.
+func (s *sitesBuilder) DumpTxtar() string {
+	var sb strings.Builder
+
+	skipRe := regexp.MustCompile(`^(public|resources|package-lock.json|go.sum)`)
+
+	afero.Walk(s.Fs.Source, s.workingDir, func(path string, info fs.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel := strings.TrimPrefix(path, s.workingDir+"/")
+		if skipRe.MatchString(rel) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if info == nil || info.IsDir() {
+			return nil
+		}
+		sb.WriteString(fmt.Sprintf("-- %s --\n", rel))
+		b, err := afero.ReadFile(s.Fs.Source, path)
+		s.Assert(err, qt.IsNil)
+		sb.WriteString(strings.TrimSpace(string(b)))
+		sb.WriteString("\n")
+		return nil
+	})
+
+	return sb.String()
 }
 
 func (s *sitesBuilder) AssertHome(matches ...string) {
@@ -717,7 +757,7 @@ func (s *sitesBuilder) AssertFileContent(filename string, matches ...string) {
 				continue
 			}
 			if !strings.Contains(content, match) {
-				s.Fatalf("No match for %q in content for %s\n%s\n%q", match, filename, content, content)
+				s.Assert(content, qt.Contains, match, qt.Commentf(match+" not in: \n"+content))
 			}
 		}
 	}
@@ -730,8 +770,7 @@ func (s *sitesBuilder) AssertFileDoesNotExist(filename string) {
 }
 
 func (s *sitesBuilder) AssertImage(width, height int, filename string) {
-	filename = filepath.Join(s.workingDir, filename)
-	f, err := s.Fs.Destination.Open(filename)
+	f, err := s.Fs.WorkingDirReadOnly.Open(filename)
 	s.Assert(err, qt.IsNil)
 	defer f.Close()
 	cfg, err := jpeg.DecodeConfig(f)
@@ -742,20 +781,21 @@ func (s *sitesBuilder) AssertImage(width, height int, filename string) {
 
 func (s *sitesBuilder) AssertNoDuplicateWrites() {
 	s.Helper()
-	d := s.Fs.Destination.(hugofs.DuplicatesReporter)
-	s.Assert(d.ReportDuplicates(), qt.Equals, "")
+	hugofs.WalkFilesystems(s.Fs.PublishDir, func(fs afero.Fs) bool {
+		if dfs, ok := fs.(hugofs.DuplicatesReporter); ok {
+			s.Assert(dfs.ReportDuplicates(), qt.Equals, "")
+		}
+		return false
+	})
 }
 
 func (s *sitesBuilder) FileContent(filename string) string {
-	s.T.Helper()
+	s.Helper()
 	filename = filepath.FromSlash(filename)
-	if !strings.HasPrefix(filename, s.workingDir) {
-		filename = filepath.Join(s.workingDir, filename)
-	}
-	return readDestination(s.T, s.Fs, filename)
+	return readWorkingDir(s.T, s.Fs, filename)
 }
 
-func (s *sitesBuilder) AssertObject(expected string, object interface{}) {
+func (s *sitesBuilder) AssertObject(expected string, object any) {
 	s.T.Helper()
 	got := s.dumper.Sdump(object)
 	expected = strings.TrimSpace(expected)
@@ -768,7 +808,7 @@ func (s *sitesBuilder) AssertObject(expected string, object interface{}) {
 }
 
 func (s *sitesBuilder) AssertFileContentRe(filename string, matches ...string) {
-	content := readDestination(s.T, s.Fs, filename)
+	content := readWorkingDir(s.T, s.Fs, filename)
 	for _, match := range matches {
 		r := regexp.MustCompile("(?s)" + match)
 		if !r.MatchString(content) {
@@ -778,32 +818,44 @@ func (s *sitesBuilder) AssertFileContentRe(filename string, matches ...string) {
 }
 
 func (s *sitesBuilder) CheckExists(filename string) bool {
-	return destinationExists(s.Fs, filepath.Clean(filename))
+	return workingDirExists(s.Fs, filepath.Clean(filename))
 }
 
 func (s *sitesBuilder) GetPage(ref string) page.Page {
-	p, err := s.H.Sites[0].getPageNew(nil, ref)
+	p, err := s.H.Sites[0].getPage(nil, ref)
 	s.Assert(err, qt.IsNil)
 	return p
 }
 
 func (s *sitesBuilder) GetPageRel(p page.Page, ref string) page.Page {
-	p, err := s.H.Sites[0].getPageNew(p, ref)
+	p, err := s.H.Sites[0].getPage(p, ref)
 	s.Assert(err, qt.IsNil)
 	return p
 }
 
 func (s *sitesBuilder) NpmInstall() hexec.Runner {
 	sc := security.DefaultConfig
-	sc.Exec.Allow = security.NewWhitelist("npm")
-	ex := hexec.New(sc)
+	var err error
+	sc.Exec.Allow, err = security.NewWhitelist("npm")
+	s.Assert(err, qt.IsNil)
+	ex := hexec.New(sc, s.workingDir, loggers.NewDefault())
 	command, err := ex.New("npm", "install")
 	s.Assert(err, qt.IsNil)
 	return command
-
 }
 
-func newTestHelper(cfg config.Provider, fs *hugofs.Fs, t testing.TB) testHelper {
+func newTestHelperFromProvider(cfg config.Provider, fs *hugofs.Fs, t testing.TB) (testHelper, *allconfig.Configs) {
+	res, err := allconfig.LoadConfig(allconfig.ConfigSourceDescriptor{
+		Flags: cfg,
+		Fs:    fs.Source,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return newTestHelper(res.Base, fs, t), res
+}
+
+func newTestHelper(cfg *allconfig.Config, fs *hugofs.Fs, t testing.TB) testHelper {
 	return testHelper{
 		Cfg: cfg,
 		Fs:  fs,
@@ -812,7 +864,7 @@ func newTestHelper(cfg config.Provider, fs *hugofs.Fs, t testing.TB) testHelper 
 }
 
 type testHelper struct {
-	Cfg config.Provider
+	Cfg *allconfig.Config
 	Fs  *hugofs.Fs
 	*qt.C
 }
@@ -820,36 +872,22 @@ type testHelper struct {
 func (th testHelper) assertFileContent(filename string, matches ...string) {
 	th.Helper()
 	filename = th.replaceDefaultContentLanguageValue(filename)
-	content := readDestination(th, th.Fs, filename)
+	content := readWorkingDir(th, th.Fs, filename)
 	for _, match := range matches {
 		match = th.replaceDefaultContentLanguageValue(match)
 		th.Assert(strings.Contains(content, match), qt.Equals, true, qt.Commentf(match+" not in: \n"+content))
 	}
 }
 
-func (th testHelper) assertFileContentRegexp(filename string, matches ...string) {
-	filename = th.replaceDefaultContentLanguageValue(filename)
-	content := readDestination(th, th.Fs, filename)
-	for _, match := range matches {
-		match = th.replaceDefaultContentLanguageValue(match)
-		r := regexp.MustCompile(match)
-		matches := r.MatchString(content)
-		if !matches {
-			fmt.Println(match+":\n", content)
-		}
-		th.Assert(matches, qt.Equals, true)
-	}
-}
-
 func (th testHelper) assertFileNotExist(filename string) {
-	exists, err := helpers.Exists(filename, th.Fs.Destination)
+	exists, err := helpers.Exists(filename, th.Fs.PublishDir)
 	th.Assert(err, qt.IsNil)
 	th.Assert(exists, qt.Equals, false)
 }
 
 func (th testHelper) replaceDefaultContentLanguageValue(value string) string {
-	defaultInSubDir := th.Cfg.GetBool("defaultContentLanguageInSubDir")
-	replace := th.Cfg.GetString("defaultContentLanguage") + "/"
+	defaultInSubDir := th.Cfg.DefaultContentLanguageInSubdir
+	replace := th.Cfg.DefaultContentLanguage + "/"
 
 	if !defaultInSubDir {
 		value = strings.Replace(value, replace, "", 1)
@@ -857,42 +895,25 @@ func (th testHelper) replaceDefaultContentLanguageValue(value string) string {
 	return value
 }
 
-func loadTestConfig(fs afero.Fs, withConfig ...func(cfg config.Provider) error) (config.Provider, error) {
-	v, _, err := LoadConfig(ConfigSourceDescriptor{Fs: fs}, withConfig...)
-	return v, err
-}
-
-func newTestCfgBasic() (config.Provider, *hugofs.Fs) {
-	mm := afero.NewMemMapFs()
-	v := config.New()
-	v.Set("defaultContentLanguageInSubdir", true)
-
-	fs := hugofs.NewFrom(hugofs.NewBaseFileDecorator(mm), v)
-
-	return v, fs
+func loadTestConfigFromProvider(cfg config.Provider) (*allconfig.Configs, error) {
+	workingDir := cfg.GetString("workingDir")
+	fs := afero.NewMemMapFs()
+	if workingDir != "" {
+		fs.MkdirAll(workingDir, 0o755)
+	}
+	res, err := allconfig.LoadConfig(allconfig.ConfigSourceDescriptor{Flags: cfg, Fs: fs})
+	return res, err
 }
 
 func newTestCfg(withConfig ...func(cfg config.Provider) error) (config.Provider, *hugofs.Fs) {
 	mm := afero.NewMemMapFs()
+	cfg := config.New()
+	cfg.Set("defaultContentLanguageInSubdir", false)
+	cfg.Set("publishDir", "public")
 
-	v, err := loadTestConfig(mm, func(cfg config.Provider) error {
-		// Default is false, but true is easier to use as default in tests
-		cfg.Set("defaultContentLanguageInSubdir", true)
+	fs := hugofs.NewFromOld(hugofs.NewBaseFileDecorator(mm), cfg)
 
-		for _, w := range withConfig {
-			w(cfg)
-		}
-
-		return nil
-	})
-
-	if err != nil && err != ErrNoConfigFile {
-		panic(err)
-	}
-
-	fs := hugofs.NewFrom(hugofs.NewBaseFileDecorator(mm), v)
-
-	return v, fs
+	return cfg, fs
 }
 
 func newTestSitesFromConfig(t testing.TB, afs afero.Fs, tomlConfig string, layoutPathContentPairs ...string) (testHelper, *HugoSites) {
@@ -905,33 +926,21 @@ func newTestSitesFromConfig(t testing.TB, afs afero.Fs, tomlConfig string, layou
 	writeToFs(t, afs, filepath.Join("content", ".gitkeep"), "")
 	writeToFs(t, afs, "config.toml", tomlConfig)
 
-	cfg, err := LoadConfigDefault(afs)
+	cfg, err := allconfig.LoadConfig(allconfig.ConfigSourceDescriptor{Fs: afs})
 	c.Assert(err, qt.IsNil)
 
-	fs := hugofs.NewFrom(afs, cfg)
-	th := newTestHelper(cfg, fs, t)
+	fs := hugofs.NewFrom(afs, cfg.LoadingInfo.BaseConfig)
+	th := newTestHelper(cfg.Base, fs, t)
 
 	for i := 0; i < len(layoutPathContentPairs); i += 2 {
 		writeSource(t, fs, layoutPathContentPairs[i], layoutPathContentPairs[i+1])
 	}
 
-	h, err := NewHugoSites(deps.DepsCfg{Fs: fs, Cfg: cfg})
+	h, err := NewHugoSites(deps.DepsCfg{Fs: fs, Configs: cfg})
 
 	c.Assert(err, qt.IsNil)
 
 	return th, h
-}
-
-func createWithTemplateFromNameValues(additionalTemplates ...string) func(templ tpl.TemplateManager) error {
-	return func(templ tpl.TemplateManager) error {
-		for i := 0; i < len(additionalTemplates); i += 2 {
-			err := templ.AddTemplate(additionalTemplates[i], additionalTemplates[i+1])
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	}
 }
 
 // TODO(bep) replace these with the builder
@@ -983,7 +992,7 @@ func getPage(in page.Page, ref string) page.Page {
 }
 
 func content(c resource.ContentProvider) string {
-	cc, err := c.Content()
+	cc, err := c.Content(context.Background())
 	if err != nil {
 		panic(err)
 	}
@@ -993,107 +1002,4 @@ func content(c resource.ContentProvider) string {
 		panic(err)
 	}
 	return ccs
-}
-
-func pagesToString(pages ...page.Page) string {
-	var paths []string
-	for _, p := range pages {
-		paths = append(paths, p.Path())
-	}
-	sort.Strings(paths)
-	return strings.Join(paths, "|")
-}
-
-func dumpPagesLinks(pages ...page.Page) {
-	var links []string
-	for _, p := range pages {
-		links = append(links, p.RelPermalink())
-	}
-	sort.Strings(links)
-
-	for _, link := range links {
-		fmt.Println(link)
-	}
-}
-
-func dumpPages(pages ...page.Page) {
-	fmt.Println("---------")
-	for _, p := range pages {
-		fmt.Printf("Kind: %s Title: %-10s RelPermalink: %-10s Path: %-10s sections: %s Lang: %s\n",
-			p.Kind(), p.Title(), p.RelPermalink(), p.Path(), p.SectionsPath(), p.Lang())
-	}
-}
-
-func dumpSPages(pages ...*pageState) {
-	for i, p := range pages {
-		fmt.Printf("%d: Kind: %s Title: %-10s RelPermalink: %-10s Path: %-10s sections: %s\n",
-			i+1,
-			p.Kind(), p.Title(), p.RelPermalink(), p.Path(), p.SectionsPath())
-	}
-}
-
-func printStringIndexes(s string) {
-	lines := strings.Split(s, "\n")
-	i := 0
-
-	for _, line := range lines {
-
-		for _, r := range line {
-			fmt.Printf("%-3s", strconv.Itoa(i))
-			i += utf8.RuneLen(r)
-		}
-		i++
-		fmt.Println()
-		for _, r := range line {
-			fmt.Printf("%-3s", string(r))
-		}
-		fmt.Println()
-
-	}
-}
-
-// See https://github.com/golang/go/issues/19280
-// Not in use.
-var parallelEnabled = true
-
-func parallel(t *testing.T) {
-	if parallelEnabled {
-		t.Parallel()
-	}
-}
-
-func skipSymlink(t *testing.T) {
-	if runtime.GOOS == "windows" && os.Getenv("CI") == "" {
-		t.Skip("skip symlink test on local Windows (needs admin)")
-	}
-}
-
-func captureStderr(f func() error) (string, error) {
-	old := os.Stderr
-	r, w, _ := os.Pipe()
-	os.Stderr = w
-
-	err := f()
-
-	w.Close()
-	os.Stderr = old
-
-	var buf bytes.Buffer
-	io.Copy(&buf, r)
-	return buf.String(), err
-}
-
-func captureStdout(f func() error) (string, error) {
-	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
-	err := f()
-
-	w.Close()
-	os.Stdout = old
-
-	var buf bytes.Buffer
-	io.Copy(&buf, r)
-	return buf.String(), err
 }

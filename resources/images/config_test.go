@@ -19,11 +19,12 @@ import (
 	"testing"
 
 	qt "github.com/frankban/quicktest"
+	"github.com/gohugoio/hugo/common/hashing"
 )
 
 func TestDecodeConfig(t *testing.T) {
 	c := qt.New(t)
-	m := map[string]interface{}{
+	m := map[string]any{
 		"quality":        42,
 		"resampleFilter": "NearestNeighbor",
 		"anchor":         "topLeft",
@@ -32,73 +33,82 @@ func TestDecodeConfig(t *testing.T) {
 	imagingConfig, err := DecodeConfig(m)
 
 	c.Assert(err, qt.IsNil)
-	imaging := imagingConfig.Cfg
-	c.Assert(imaging.Quality, qt.Equals, 42)
-	c.Assert(imaging.ResampleFilter, qt.Equals, "nearestneighbor")
-	c.Assert(imaging.Anchor, qt.Equals, "topleft")
+	conf := imagingConfig.Config
+	c.Assert(conf.Imaging.Quality, qt.Equals, 42)
+	c.Assert(conf.Imaging.ResampleFilter, qt.Equals, "nearestneighbor")
+	c.Assert(conf.Imaging.Anchor, qt.Equals, "topleft")
 
-	m = map[string]interface{}{}
+	m = map[string]any{}
 
 	imagingConfig, err = DecodeConfig(m)
 	c.Assert(err, qt.IsNil)
-	imaging = imagingConfig.Cfg
-	c.Assert(imaging.ResampleFilter, qt.Equals, "box")
-	c.Assert(imaging.Anchor, qt.Equals, "smart")
+	conf = imagingConfig.Config
+	c.Assert(conf.Imaging.ResampleFilter, qt.Equals, "box")
+	c.Assert(conf.Imaging.Anchor, qt.Equals, "smart")
 
-	_, err = DecodeConfig(map[string]interface{}{
+	_, err = DecodeConfig(map[string]any{
 		"quality": 123,
 	})
 	c.Assert(err, qt.Not(qt.IsNil))
 
-	_, err = DecodeConfig(map[string]interface{}{
+	_, err = DecodeConfig(map[string]any{
 		"resampleFilter": "asdf",
 	})
 	c.Assert(err, qt.Not(qt.IsNil))
 
-	_, err = DecodeConfig(map[string]interface{}{
+	_, err = DecodeConfig(map[string]any{
 		"anchor": "asdf",
 	})
 	c.Assert(err, qt.Not(qt.IsNil))
 
-	imagingConfig, err = DecodeConfig(map[string]interface{}{
+	imagingConfig, err = DecodeConfig(map[string]any{
 		"anchor": "Smart",
 	})
-	imaging = imagingConfig.Cfg
+	conf = imagingConfig.Config
 	c.Assert(err, qt.IsNil)
-	c.Assert(imaging.Anchor, qt.Equals, "smart")
+	c.Assert(conf.Imaging.Anchor, qt.Equals, "smart")
 
-	imagingConfig, err = DecodeConfig(map[string]interface{}{
-		"exif": map[string]interface{}{
+	imagingConfig, err = DecodeConfig(map[string]any{
+		"exif": map[string]any{
 			"disableLatLong": true,
 		},
 	})
 	c.Assert(err, qt.IsNil)
-	imaging = imagingConfig.Cfg
-	c.Assert(imaging.Exif.DisableLatLong, qt.Equals, true)
-	c.Assert(imaging.Exif.ExcludeFields, qt.Equals, "GPS|Exif|Exposure[M|P|B]|Contrast|Resolution|Sharp|JPEG|Metering|Sensing|Saturation|ColorSpace|Flash|WhiteBalance")
+	conf = imagingConfig.Config
+	c.Assert(conf.Imaging.Exif.DisableLatLong, qt.Equals, true)
+	c.Assert(conf.Imaging.Exif.ExcludeFields, qt.Equals, "GPS|Exif|Exposure[M|P|B]|Contrast|Resolution|Sharp|JPEG|Metering|Sensing|Saturation|ColorSpace|Flash|WhiteBalance")
 }
 
 func TestDecodeImageConfig(t *testing.T) {
 	for i, this := range []struct {
+		action string
 		in     string
-		expect interface{}
+		expect any
 	}{
-		{"300x400", newImageConfig(300, 400, 75, 0, "box", "smart", "")},
-		{"300x400 #fff", newImageConfig(300, 400, 75, 0, "box", "smart", "fff")},
-		{"100x200 bottomRight", newImageConfig(100, 200, 75, 0, "box", "BottomRight", "")},
-		{"10x20 topleft Lanczos", newImageConfig(10, 20, 75, 0, "Lanczos", "topleft", "")},
-		{"linear left 10x r180", newImageConfig(10, 0, 75, 180, "linear", "left", "")},
-		{"x20 riGht Cosine q95", newImageConfig(0, 20, 95, 0, "cosine", "right", "")},
+		{"resize", "300x400", newImageConfig("resize", 300, 400, 75, 0, "box", "smart", "")},
+		{"resize", "300x400 #fff", newImageConfig("resize", 300, 400, 75, 0, "box", "smart", "fff")},
+		{"resize", "100x200 bottomRight", newImageConfig("resize", 100, 200, 75, 0, "box", "BottomRight", "")},
+		{"resize", "10x20 topleft Lanczos", newImageConfig("resize", 10, 20, 75, 0, "Lanczos", "topleft", "")},
+		{"resize", "linear left 10x r180", newImageConfig("resize", 10, 0, 75, 180, "linear", "left", "")},
+		{"resize", "x20 riGht Cosine q95", newImageConfig("resize", 0, 20, 95, 0, "cosine", "right", "")},
+		{"crop", "300x400", newImageConfig("crop", 300, 400, 75, 0, "box", "smart", "")},
+		{"fill", "300x400", newImageConfig("fill", 300, 400, 75, 0, "box", "smart", "")},
+		{"fit", "300x400", newImageConfig("fit", 300, 400, 75, 0, "box", "smart", "")},
 
-		{"", false},
-		{"foo", false},
+		{"resize", "", false},
+		{"resize", "foo", false},
+		{"crop", "100x", false},
+		{"fill", "100x", false},
+		{"fit", "100x", false},
+		{"foo", "100x", false},
 	} {
 
 		cfg, err := DecodeConfig(nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		result, err := DecodeImageConfig("resize", this.in, cfg, PNG)
+		options := append([]string{this.action}, strings.Fields(this.in)...)
+		result, err := DecodeImageConfig(options, cfg, PNG)
 		if b, ok := this.expect.(bool); ok && !b {
 			if err == nil {
 				t.Errorf("[%d] parseImageConfig didn't return an expected error", i)
@@ -107,15 +117,19 @@ func TestDecodeImageConfig(t *testing.T) {
 			if err != nil {
 				t.Fatalf("[%d] err: %s", i, err)
 			}
-			if fmt.Sprint(result) != fmt.Sprint(this.expect) {
-				t.Fatalf("[%d] got\n%v\n but expected\n%v", i, result, this.expect)
+			expect := this.expect.(ImageConfig)
+			expect.Key = hashing.HashStringHex(options)
+
+			if fmt.Sprint(result) != fmt.Sprint(expect) {
+				t.Fatalf("[%d] got\n%v\n but expected\n%v", i, result, expect)
 			}
 		}
 	}
 }
 
-func newImageConfig(width, height, quality, rotate int, filter, anchor, bgColor string) ImageConfig {
-	var c ImageConfig = GetDefaultImageConfig("resize", ImagingConfig{})
+func newImageConfig(action string, width, height, quality, rotate int, filter, anchor, bgColor string) ImageConfig {
+	var c ImageConfig = GetDefaultImageConfig(nil)
+	c.Action = action
 	c.TargetFormat = PNG
 	c.Hint = 2
 	c.Width = width
@@ -123,26 +137,20 @@ func newImageConfig(width, height, quality, rotate int, filter, anchor, bgColor 
 	c.Quality = quality
 	c.qualitySetForImage = quality != 75
 	c.Rotate = rotate
-	c.BgColorStr = bgColor
-	c.BgColor, _ = hexStringToColor(bgColor)
+	c.BgColor, _ = hexStringToColorGo(bgColor)
+	c.Anchor = SmartCropAnchor
 
 	if filter != "" {
 		filter = strings.ToLower(filter)
 		if v, ok := imageFilters[filter]; ok {
 			c.Filter = v
-			c.FilterStr = filter
 		}
 	}
 
 	if anchor != "" {
-		if anchor == smartCropIdentifier {
-			c.AnchorStr = anchor
-		} else {
-			anchor = strings.ToLower(anchor)
-			if v, ok := anchorPositions[anchor]; ok {
-				c.Anchor = v
-				c.AnchorStr = anchor
-			}
+		anchor = strings.ToLower(anchor)
+		if v, ok := anchorPositions[anchor]; ok {
+			c.Anchor = v
 		}
 	}
 

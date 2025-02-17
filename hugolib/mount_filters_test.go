@@ -20,7 +20,6 @@ import (
 	"testing"
 
 	"github.com/gohugoio/hugo/common/loggers"
-
 	"github.com/gohugoio/hugo/hugofs/files"
 
 	"github.com/gohugoio/hugo/htesting"
@@ -37,9 +36,9 @@ func TestMountFilters(t *testing.T) {
 	defer clean()
 
 	for _, component := range files.ComponentFolders {
-		b.Assert(os.MkdirAll(filepath.Join(workingDir, component), 0777), qt.IsNil)
+		b.Assert(os.MkdirAll(filepath.Join(workingDir, component), 0o777), qt.IsNil)
 	}
-	b.WithWorkingDir(workingDir).WithLogger(loggers.NewInfoLogger())
+	b.WithWorkingDir(workingDir).WithLogger(loggers.NewDefault())
 	b.WithConfigFile("toml", fmt.Sprintf(`
 workingDir = %q
 
@@ -101,19 +100,18 @@ Resources: {{ resources.Match "**.js" }}
 
 	assertExists := func(name string, shouldExist bool) {
 		b.Helper()
-		b.Assert(b.CheckExists(filepath.Join(workingDir, name)), qt.Equals, shouldExist)
+		b.Assert(b.CheckExists(name), qt.Equals, shouldExist)
 	}
 
 	assertExists("public/a/b/p1/index.html", true)
 	assertExists("public/a/c/p2/index.html", false)
 
-	b.AssertFileContent(filepath.Join(workingDir, "public", "index.html"), `
+	b.AssertFileContent(filepath.Join("public", "index.html"), `
 Data: map[mydata:map[b:map[b1:bval]]]:END	
 Template: false
-Resource1: js/include.js:END
+Resource1: /js/include.js:END
 Resource2: :END
 Resource3: :END
-Resources: [js/include.js]
+Resources: [/js/include.js]
 `)
-
 }

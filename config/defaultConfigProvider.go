@@ -15,50 +15,15 @@ package config
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
+
+	xmaps "golang.org/x/exp/maps"
 
 	"github.com/spf13/cast"
 
 	"github.com/gohugoio/hugo/common/maps"
 )
-
-var (
-
-	// ConfigRootKeysSet contains all of the config map root keys.
-	ConfigRootKeysSet = map[string]bool{
-		"build":         true,
-		"caches":        true,
-		"cascade":       true,
-		"frontmatter":   true,
-		"languages":     true,
-		"imaging":       true,
-		"markup":        true,
-		"mediatypes":    true,
-		"menus":         true,
-		"minify":        true,
-		"module":        true,
-		"outputformats": true,
-		"params":        true,
-		"permalinks":    true,
-		"related":       true,
-		"sitemap":       true,
-		"privacy":       true,
-		"security":      true,
-		"taxonomies":    true,
-	}
-
-	// ConfigRootKeys is a sorted version of ConfigRootKeysSet.
-	ConfigRootKeys []string
-)
-
-func init() {
-	for k := range ConfigRootKeysSet {
-		ConfigRootKeys = append(ConfigRootKeys, k)
-	}
-	sort.Strings(ConfigRootKeys)
-}
 
 // New creates a Provider backed by an empty maps.Params.
 func New() Provider {
@@ -84,7 +49,7 @@ type defaultConfigProvider struct {
 	keyCache sync.Map
 }
 
-func (c *defaultConfigProvider) Get(k string) interface{} {
+func (c *defaultConfigProvider) Get(k string) any {
 	if k == "" {
 		return c.root
 	}
@@ -133,7 +98,7 @@ func (c *defaultConfigProvider) GetParams(k string) maps.Params {
 	return v.(maps.Params)
 }
 
-func (c *defaultConfigProvider) GetStringMap(k string) map[string]interface{} {
+func (c *defaultConfigProvider) GetStringMap(k string) map[string]any {
 	v := c.Get(k)
 	return maps.ToStringMap(v)
 }
@@ -148,16 +113,16 @@ func (c *defaultConfigProvider) GetStringSlice(k string) []string {
 	return cast.ToStringSlice(v)
 }
 
-func (c *defaultConfigProvider) Set(k string, v interface{}) {
+func (c *defaultConfigProvider) Set(k string, v any) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	k = strings.ToLower(k)
 
 	if k == "" {
-		if p, ok := maps.ToParamsAndPrepare(v); ok {
+		if p, err := maps.ToParamsAndPrepare(v); err == nil {
 			// Set the values directly in root.
-			c.root.Set(p)
+			maps.SetParams(c.root, p)
 		} else {
 			c.root[k] = v
 		}
@@ -166,7 +131,7 @@ func (c *defaultConfigProvider) Set(k string, v interface{}) {
 	}
 
 	switch vv := v.(type) {
-	case map[string]interface{}, map[interface{}]interface{}, map[string]string:
+	case map[string]any, map[any]any, map[string]string:
 		p := maps.MustToParamsAndPrepare(vv)
 		v = p
 	}
@@ -179,7 +144,7 @@ func (c *defaultConfigProvider) Set(k string, v interface{}) {
 	if existing, found := m[key]; found {
 		if p1, ok := existing.(maps.Params); ok {
 			if p2, ok := v.(maps.Params); ok {
-				p1.Set(p2)
+				maps.SetParams(p1, p2)
 				return
 			}
 		}
@@ -198,16 +163,10 @@ func (c *defaultConfigProvider) SetDefaults(params maps.Params) {
 	}
 }
 
-func (c *defaultConfigProvider) Merge(k string, v interface{}) {
+func (c *defaultConfigProvider) Merge(k string, v any) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	k = strings.ToLower(k)
-
-	const (
-		languagesKey = "languages"
-		paramsKey    = "params"
-		menusKey     = "menus"
-	)
 
 	if k == "" {
 		rs, f := c.root.GetMergeStrategy()
@@ -217,7 +176,7 @@ func (c *defaultConfigProvider) Merge(k string, v interface{}) {
 			return
 		}
 
-		if p, ok := maps.ToParamsAndPrepare(v); ok {
+		if p, err := maps.ToParamsAndPrepare(v); err == nil {
 			// As there may be keys in p not in root, we need to handle
 			// those as a special case.
 			var keysToDelete []string
@@ -225,49 +184,14 @@ func (c *defaultConfigProvider) Merge(k string, v interface{}) {
 				if pp, ok := vv.(maps.Params); ok {
 					if pppi, ok := c.root[kk]; ok {
 						ppp := pppi.(maps.Params)
-						if kk == languagesKey {
-							// Languages is currently a special case.
-							// We may have languages with menus or params in the
-							// right map that is not present in the left map.
-							// With the default merge strategy those items will not
-							// be passed over.
-							var hasParams, hasMenus bool
-							for _, rv := range pp {
-								if lkp, ok := rv.(maps.Params); ok {
-									_, hasMenus = lkp[menusKey]
-									_, hasParams = lkp[paramsKey]
-								}
-							}
-
-							if hasMenus || hasParams {
-								for _, lv := range ppp {
-									if lkp, ok := lv.(maps.Params); ok {
-										if hasMenus {
-											if _, ok := lkp[menusKey]; !ok {
-												p := maps.Params{}
-												p.SetDefaultMergeStrategy(maps.ParamsMergeStrategyShallow)
-												lkp[menusKey] = p
-											}
-										}
-										if hasParams {
-											if _, ok := lkp[paramsKey]; !ok {
-												p := maps.Params{}
-												p.SetDefaultMergeStrategy(maps.ParamsMergeStrategyShallow)
-												lkp[paramsKey] = p
-											}
-										}
-									}
-								}
-							}
-						}
-						ppp.Merge(pp)
+						maps.MergeParamsWithStrategy("", ppp, pp)
 					} else {
 						// We need to use the default merge strategy for
 						// this key.
 						np := make(maps.Params)
-						strategy := c.determineMergeStrategy(KeyParams{Key: "", Params: c.root}, KeyParams{Key: kk, Params: np})
-						np.SetDefaultMergeStrategy(strategy)
-						np.Merge(pp)
+						strategy := c.determineMergeStrategy(maps.KeyParams{Key: "", Params: c.root}, maps.KeyParams{Key: kk, Params: np})
+						np.SetMergeStrategy(strategy)
+						maps.MergeParamsWithStrategy("", np, pp)
 						c.root[kk] = np
 						if np.IsZero() {
 							// Just keep it until merge is done.
@@ -277,7 +201,7 @@ func (c *defaultConfigProvider) Merge(k string, v interface{}) {
 				}
 			}
 			// Merge the rest.
-			c.root.MergeRoot(p)
+			maps.MergeParams(c.root, p)
 			for _, k := range keysToDelete {
 				delete(c.root, k)
 			}
@@ -289,7 +213,7 @@ func (c *defaultConfigProvider) Merge(k string, v interface{}) {
 	}
 
 	switch vv := v.(type) {
-	case map[string]interface{}, map[interface{}]interface{}, map[string]string:
+	case map[string]any, map[any]any, map[string]string:
 		p := maps.MustToParamsAndPrepare(vv)
 		v = p
 	}
@@ -302,7 +226,7 @@ func (c *defaultConfigProvider) Merge(k string, v interface{}) {
 	if existing, found := m[key]; found {
 		if p1, ok := existing.(maps.Params); ok {
 			if p2, ok := v.(maps.Params); ok {
-				p1.Merge(p2)
+				maps.MergeParamsWithStrategy("", p1, p2)
 			}
 		}
 	} else {
@@ -310,9 +234,15 @@ func (c *defaultConfigProvider) Merge(k string, v interface{}) {
 	}
 }
 
-func (c *defaultConfigProvider) WalkParams(walkFn func(params ...KeyParams) bool) {
-	var walk func(params ...KeyParams)
-	walk = func(params ...KeyParams) {
+func (c *defaultConfigProvider) Keys() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return xmaps.Keys(c.root)
+}
+
+func (c *defaultConfigProvider) WalkParams(walkFn func(params ...maps.KeyParams) bool) {
+	var walk func(params ...maps.KeyParams)
+	walk = func(params ...maps.KeyParams) {
 		if walkFn(params...) {
 			return
 		}
@@ -320,17 +250,17 @@ func (c *defaultConfigProvider) WalkParams(walkFn func(params ...KeyParams) bool
 		i := len(params)
 		for k, v := range p1.Params {
 			if p2, ok := v.(maps.Params); ok {
-				paramsplus1 := make([]KeyParams, i+1)
+				paramsplus1 := make([]maps.KeyParams, i+1)
 				copy(paramsplus1, params)
-				paramsplus1[i] = KeyParams{Key: k, Params: p2}
+				paramsplus1[i] = maps.KeyParams{Key: k, Params: p2}
 				walk(paramsplus1...)
 			}
 		}
 	}
-	walk(KeyParams{Key: "", Params: c.root})
+	walk(maps.KeyParams{Key: "", Params: c.root})
 }
 
-func (c *defaultConfigProvider) determineMergeStrategy(params ...KeyParams) maps.ParamsMergeStrategy {
+func (c *defaultConfigProvider) determineMergeStrategy(params ...maps.KeyParams) maps.ParamsMergeStrategy {
 	if len(params) == 0 {
 		return maps.ParamsMergeStrategyNone
 	}
@@ -386,13 +316,8 @@ func (c *defaultConfigProvider) determineMergeStrategy(params ...KeyParams) maps
 	return strategy
 }
 
-type KeyParams struct {
-	Key    string
-	Params maps.Params
-}
-
 func (c *defaultConfigProvider) SetDefaultMergeStrategy() {
-	c.WalkParams(func(params ...KeyParams) bool {
+	c.WalkParams(func(params ...maps.KeyParams) bool {
 		if len(params) == 0 {
 			return false
 		}
@@ -404,11 +329,10 @@ func (c *defaultConfigProvider) SetDefaultMergeStrategy() {
 		}
 		strategy := c.determineMergeStrategy(params...)
 		if strategy != "" {
-			p.SetDefaultMergeStrategy(strategy)
+			p.SetMergeStrategy(strategy)
 		}
 		return false
 	})
-
 }
 
 func (c *defaultConfigProvider) getNestedKeyAndMap(key string, create bool) (string, maps.Params) {

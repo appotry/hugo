@@ -15,6 +15,7 @@ package i18n
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/gohugoio/hugo/common/paths"
@@ -30,7 +31,6 @@ import (
 	"github.com/gohugoio/hugo/deps"
 	"github.com/gohugoio/hugo/hugofs"
 	"github.com/gohugoio/hugo/source"
-	_errors "github.com/pkg/errors"
 )
 
 // TranslationProvider provides translation handling, i.e. loading
@@ -45,45 +45,48 @@ func NewTranslationProvider() *TranslationProvider {
 }
 
 // Update updates the i18n func in the provided Deps.
-func (tp *TranslationProvider) Update(d *deps.Deps) error {
-	spec := source.NewSourceSpec(d.PathSpec, nil, nil)
+func (tp *TranslationProvider) NewResource(dst *deps.Deps) error {
+	defaultLangTag, err := language.Parse(dst.Conf.DefaultContentLanguage())
+	if err != nil {
+		defaultLangTag = language.English
+	}
+	bundle := i18n.NewBundle(defaultLangTag)
 
-	bundle := i18n.NewBundle(language.English)
 	bundle.RegisterUnmarshalFunc("toml", toml.Unmarshal)
 	bundle.RegisterUnmarshalFunc("yaml", yaml.Unmarshal)
 	bundle.RegisterUnmarshalFunc("yml", yaml.Unmarshal)
 	bundle.RegisterUnmarshalFunc("json", json.Unmarshal)
 
-	// The source dirs are ordered so the most important comes first. Since this is a
-	// last key win situation, we have to reverse the iteration order.
-	dirs := d.BaseFs.I18n.Dirs
-	for i := len(dirs) - 1; i >= 0; i-- {
-		dir := dirs[i]
-		src := spec.NewFilesystemFromFileMetaInfo(dir)
-		files, err := src.Files()
-		if err != nil {
-			return err
-		}
-		for _, file := range files {
-			if err := addTranslationFile(bundle, file); err != nil {
-				return err
-			}
-		}
+	w := hugofs.NewWalkway(
+		hugofs.WalkwayConfig{
+			Fs:         dst.BaseFs.I18n.Fs,
+			IgnoreFile: dst.SourceSpec.IgnoreFile,
+			PathParser: dst.SourceSpec.Cfg.PathParser(),
+			WalkFn: func(path string, info hugofs.FileMetaInfo) error {
+				if info.IsDir() {
+					return nil
+				}
+				return addTranslationFile(bundle, source.NewFileInfo(info))
+			},
+		})
+
+	if err := w.Walk(); err != nil {
+		return err
 	}
 
-	tp.t = NewTranslator(bundle, d.Cfg, d.Log)
+	tp.t = NewTranslator(bundle, dst.Conf, dst.Log)
 
-	d.Translate = tp.t.Func(d.Language.Lang)
+	dst.Translate = tp.t.Func(dst.Conf.Language().Lang)
 
 	return nil
 }
 
 const artificialLangTagPrefix = "art-x-"
 
-func addTranslationFile(bundle *i18n.Bundle, r source.File) error {
+func addTranslationFile(bundle *i18n.Bundle, r *source.File) error {
 	f, err := r.FileInfo().Meta().Open()
 	if err != nil {
-		return _errors.Wrapf(err, "failed to open translations file %q:", r.LogicalName())
+		return fmt.Errorf("failed to open translations file %q:: %w", r.LogicalName(), err)
 	}
 
 	b := helpers.ReaderToBytes(f)
@@ -96,7 +99,7 @@ func addTranslationFile(bundle *i18n.Bundle, r source.File) error {
 		try := artificialLangTagPrefix + lang
 		_, err = language.Parse(try)
 		if err != nil {
-			return _errors.Errorf("%q %s.", try, err)
+			return fmt.Errorf("%q: %s", try, err)
 		}
 		name = artificialLangTagPrefix + name
 	}
@@ -111,26 +114,20 @@ func addTranslationFile(bundle *i18n.Bundle, r source.File) error {
 				return nil
 			}
 		}
-		return errWithFileContext(_errors.Wrapf(err, "failed to load translations"), r)
+		return errWithFileContext(fmt.Errorf("failed to load translations: %w", err), r)
 	}
 
 	return nil
 }
 
-// Clone sets the language func for the new language.
-func (tp *TranslationProvider) Clone(d *deps.Deps) error {
-	d.Translate = tp.t.Func(d.Language.Lang)
-
+// CloneResource sets the language func for the new language.
+func (tp *TranslationProvider) CloneResource(dst, src *deps.Deps) error {
+	dst.Translate = tp.t.Func(dst.Conf.Language().Lang)
 	return nil
 }
 
-func errWithFileContext(inerr error, r source.File) error {
-	fim, ok := r.FileInfo().(hugofs.FileMetaInfo)
-	if !ok {
-		return inerr
-	}
-
-	meta := fim.Meta()
+func errWithFileContext(inerr error, r *source.File) error {
+	meta := r.FileInfo().Meta()
 	realFilename := meta.Filename
 	f, err := meta.Open()
 	if err != nil {
@@ -138,11 +135,5 @@ func errWithFileContext(inerr error, r source.File) error {
 	}
 	defer f.Close()
 
-	err, _ = herrors.WithFileContext(
-		inerr,
-		realFilename,
-		f,
-		herrors.SimpleLineMatcher)
-
-	return err
+	return herrors.NewFileErrorFromName(inerr, realFilename).UpdateContent(f, nil)
 }

@@ -14,13 +14,13 @@
 package hugolib
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 
-	"github.com/gohugoio/hugo/common/loggers"
-
 	qt "github.com/frankban/quicktest"
+	"github.com/gohugoio/hugo/common/loggers"
 )
 
 const pageWithAlias = `---
@@ -51,13 +51,13 @@ func TestAlias(t *testing.T) {
 		fileSuffix string
 		urlPrefix  string
 		urlSuffix  string
-		settings   map[string]interface{}
+		settings   map[string]any
 	}{
-		{"/index.html", "http://example.com", "/", map[string]interface{}{"baseURL": "http://example.com"}},
-		{"/index.html", "http://example.com/some/path", "/", map[string]interface{}{"baseURL": "http://example.com/some/path"}},
-		{"/index.html", "http://example.com", "/", map[string]interface{}{"baseURL": "http://example.com", "canonifyURLs": true}},
-		{"/index.html", "../..", "/", map[string]interface{}{"relativeURLs": true}},
-		{".html", "", ".html", map[string]interface{}{"uglyURLs": true}},
+		{"/index.html", "http://example.com", "/", map[string]any{"baseURL": "http://example.com"}},
+		{"/index.html", "http://example.com/some/path", "/", map[string]any{"baseURL": "http://example.com/some/path"}},
+		{"/index.html", "http://example.com", "/", map[string]any{"baseURL": "http://example.com", "canonifyURLs": true}},
+		{"/index.html", "../..", "/", map[string]any{"relativeURLs": true}},
+		{".html", "", ".html", map[string]any{"uglyURLs": true}},
 	}
 
 	for _, test := range tests {
@@ -71,8 +71,8 @@ func TestAlias(t *testing.T) {
 		// the real page
 		b.AssertFileContent("public/blog/page"+test.fileSuffix, "For some moments the old man")
 		// the alias redirectors
-		b.AssertFileContent("public/foo/bar"+test.fileSuffix, "<meta http-equiv=\"refresh\" content=\"0; url="+test.urlPrefix+"/blog/page"+test.urlSuffix+"\" />")
-		b.AssertFileContent("public/blog/rel"+test.fileSuffix, "<meta http-equiv=\"refresh\" content=\"0; url="+test.urlPrefix+"/blog/page"+test.urlSuffix+"\" />")
+		b.AssertFileContent("public/foo/bar"+test.fileSuffix, "<meta http-equiv=\"refresh\" content=\"0; url="+test.urlPrefix+"/blog/page"+test.urlSuffix+"\">")
+		b.AssertFileContent("public/blog/rel"+test.fileSuffix, "<meta http-equiv=\"refresh\" content=\"0; url="+test.urlPrefix+"/blog/page"+test.urlSuffix+"\">")
 	}
 }
 
@@ -90,6 +90,8 @@ func TestAliasMultipleOutputFormats(t *testing.T) {
 		"_default/single.json", basicTemplate)
 
 	b.CreateSites().Build(BuildCfg{})
+
+	b.H.Sites[0].pageMap.debugPrint("", 999, os.Stdout)
 
 	// the real pages
 	b.AssertFileContent("public/blog/page/index.html", "For some moments the old man")
@@ -117,7 +119,7 @@ func TestAliasTemplate(t *testing.T) {
 }
 
 func TestTargetPathHTMLRedirectAlias(t *testing.T) {
-	h := newAliasHandler(nil, loggers.NewErrorLogger(), false)
+	h := newAliasHandler(nil, loggers.NewDefault(), false)
 
 	errIsNilForThisOS := runtime.GOOS != "windows"
 

@@ -27,7 +27,7 @@ func TestPrepareParams(t *testing.T) {
 		expected Params
 	}{
 		{
-			map[string]interface{}{
+			map[string]any{
 				"abC": 32,
 			},
 			Params{
@@ -35,16 +35,16 @@ func TestPrepareParams(t *testing.T) {
 			},
 		},
 		{
-			map[string]interface{}{
+			map[string]any{
 				"abC": 32,
-				"deF": map[interface{}]interface{}{
+				"deF": map[any]any{
 					23: "A value",
-					24: map[string]interface{}{
+					24: map[string]any{
 						"AbCDe": "A value",
 						"eFgHi": "Another value",
 					},
 				},
-				"gHi": map[string]interface{}{
+				"gHi": map[string]any{
 					"J": 25,
 				},
 				"jKl": map[string]string{
@@ -73,9 +73,13 @@ func TestPrepareParams(t *testing.T) {
 	for i, test := range tests {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {
 			// PrepareParams modifies input.
+			prepareClone := PrepareParamsClone(test.input)
 			PrepareParams(test.input)
 			if !reflect.DeepEqual(test.expected, test.input) {
 				t.Errorf("[%d] Expected\n%#v, got\n%#v\n", i, test.expected, test.input)
+			}
+			if !reflect.DeepEqual(test.expected, prepareClone) {
+				t.Errorf("[%d] Expected\n%#v, got\n%#v\n", i, test.expected, prepareClone)
 			}
 		})
 	}
@@ -85,23 +89,23 @@ func TestToSliceStringMap(t *testing.T) {
 	c := qt.New(t)
 
 	tests := []struct {
-		input    interface{}
-		expected []map[string]interface{}
+		input    any
+		expected []map[string]any
 	}{
 		{
-			input: []map[string]interface{}{
+			input: []map[string]any{
 				{"abc": 123},
 			},
-			expected: []map[string]interface{}{
+			expected: []map[string]any{
 				{"abc": 123},
 			},
 		}, {
-			input: []interface{}{
-				map[string]interface{}{
+			input: []any{
+				map[string]any{
 					"def": 456,
 				},
 			},
-			expected: []map[string]interface{}{
+			expected: []map[string]any{
 				{"def": 456},
 			},
 		},
@@ -116,44 +120,44 @@ func TestToSliceStringMap(t *testing.T) {
 
 func TestToParamsAndPrepare(t *testing.T) {
 	c := qt.New(t)
-	_, ok := ToParamsAndPrepare(map[string]interface{}{"A": "av"})
-	c.Assert(ok, qt.IsTrue)
+	_, err := ToParamsAndPrepare(map[string]any{"A": "av"})
+	c.Assert(err, qt.IsNil)
 
-	params, ok := ToParamsAndPrepare(nil)
-	c.Assert(ok, qt.IsTrue)
+	params, err := ToParamsAndPrepare(nil)
+	c.Assert(err, qt.IsNil)
 	c.Assert(params, qt.DeepEquals, Params{})
 }
 
 func TestRenameKeys(t *testing.T) {
 	c := qt.New(t)
 
-	m := map[string]interface{}{
+	m := map[string]any{
 		"a":    32,
 		"ren1": "m1",
 		"ren2": "m1_2",
-		"sub": map[string]interface{}{
-			"subsub": map[string]interface{}{
+		"sub": map[string]any{
+			"subsub": map[string]any{
 				"REN1": "m2",
 				"ren2": "m2_2",
 			},
 		},
-		"no": map[string]interface{}{
+		"no": map[string]any{
 			"ren1": "m2",
 			"ren2": "m2_2",
 		},
 	}
 
-	expected := map[string]interface{}{
+	expected := map[string]any{
 		"a":    32,
 		"new1": "m1",
 		"new2": "m1_2",
-		"sub": map[string]interface{}{
-			"subsub": map[string]interface{}{
+		"sub": map[string]any{
+			"subsub": map[string]any{
 				"new1": "m2",
 				"ren2": "m2_2",
 			},
 		},
-		"no": map[string]interface{}{
+		"no": map[string]any{
 			"ren1": "m2",
 			"ren2": "m2_2",
 		},
@@ -170,4 +174,28 @@ func TestRenameKeys(t *testing.T) {
 	if !reflect.DeepEqual(expected, m) {
 		t.Errorf("Expected\n%#v, got\n%#v\n", expected, m)
 	}
+}
+
+func TestLookupEqualFold(t *testing.T) {
+	c := qt.New(t)
+
+	m1 := map[string]any{
+		"a": "av",
+		"B": "bv",
+	}
+
+	v, k, found := LookupEqualFold(m1, "b")
+	c.Assert(found, qt.IsTrue)
+	c.Assert(v, qt.Equals, "bv")
+	c.Assert(k, qt.Equals, "B")
+
+	m2 := map[string]string{
+		"a": "av",
+		"B": "bv",
+	}
+
+	v, k, found = LookupEqualFold(m2, "b")
+	c.Assert(found, qt.IsTrue)
+	c.Assert(k, qt.Equals, "B")
+	c.Assert(v, qt.Equals, "bv")
 }

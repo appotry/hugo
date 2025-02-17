@@ -18,30 +18,32 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/gohugoio/hugo/config/security"
-	"github.com/gohugoio/hugo/modules"
+	"github.com/gohugoio/hugo/cache/filecache"
+	"github.com/gohugoio/hugo/common/loggers"
+
+	"github.com/gohugoio/hugo/config/testconfig"
 
 	"github.com/gohugoio/hugo/helpers"
 
 	qt "github.com/frankban/quicktest"
-	"github.com/gohugoio/hugo/cache/filecache"
-	"github.com/gohugoio/hugo/common/hexec"
-	"github.com/gohugoio/hugo/common/loggers"
 	"github.com/gohugoio/hugo/config"
 	"github.com/gohugoio/hugo/deps"
 	"github.com/gohugoio/hugo/hugofs"
-	"github.com/gohugoio/hugo/langs"
 	"github.com/spf13/afero"
 )
 
 func TestScpGetLocal(t *testing.T) {
 	t.Parallel()
 	v := config.New()
-	fs := hugofs.NewMem(v)
+	workingDir := "/my/working/dir"
+	v.Set("workingDir", workingDir)
+	v.Set("publishDir", "public")
+	fs := hugofs.NewFromOld(afero.NewMemMapFs(), v)
 	ps := helpers.FilePathSeparator
 
 	tests := []struct {
@@ -57,12 +59,12 @@ func TestScpGetLocal(t *testing.T) {
 
 	for _, test := range tests {
 		r := bytes.NewReader(test.content)
-		err := helpers.WriteToDisk(test.path, r, fs.Source)
+		err := helpers.WriteToDisk(filepath.Join(workingDir, test.path), r, fs.Source)
 		if err != nil {
 			t.Error(err)
 		}
 
-		c, err := getLocal(test.path, fs.Source, v)
+		c, err := getLocal(workingDir, test.path, fs.Source)
 		if err != nil {
 			t.Errorf("Error getting resource content: %s", err)
 		}
@@ -147,7 +149,6 @@ func TestScpGetRemoteParallel(t *testing.T) {
 	for _, ignoreCache := range []bool{false} {
 		cfg := config.New()
 		cfg.Set("ignoreCache", ignoreCache)
-		cfg.Set("contentDir", "content")
 
 		ns := New(newDeps(cfg))
 		ns.client = cl
@@ -181,53 +182,21 @@ func TestScpGetRemoteParallel(t *testing.T) {
 }
 
 func newDeps(cfg config.Provider) *deps.Deps {
-	cfg.Set("resourceDir", "resources")
-	cfg.Set("dataDir", "resources")
-	cfg.Set("i18nDir", "i18n")
-	cfg.Set("assetDir", "assets")
-	cfg.Set("layoutDir", "layouts")
-	cfg.Set("archetypeDir", "archetypes")
+	conf := testconfig.GetTestConfig(nil, cfg)
+	logger := loggers.NewDefault()
+	fs := hugofs.NewFrom(afero.NewMemMapFs(), conf.BaseConfig())
 
-	langs.LoadLanguageSettings(cfg, nil)
-	mod, err := modules.CreateProjectModule(cfg)
-	if err != nil {
+	d := &deps.Deps{
+		Fs:   fs,
+		Log:  logger,
+		Conf: conf,
+	}
+	if err := d.Init(); err != nil {
 		panic(err)
 	}
-	cfg.Set("allModules", modules.Modules{mod})
-
-	ex := hexec.New(security.DefaultConfig)
-
-	logger := loggers.NewIgnorableLogger(loggers.NewErrorLogger(), "none")
-	cs, err := helpers.NewContentSpec(cfg, logger, afero.NewMemMapFs(), ex)
-	if err != nil {
-		panic(err)
-	}
-
-	fs := hugofs.NewMem(cfg)
-
-	p, err := helpers.NewPathSpec(fs, cfg, nil)
-	if err != nil {
-		panic(err)
-	}
-
-	fileCaches, err := filecache.NewCaches(p)
-	if err != nil {
-		panic(err)
-	}
-
-	return &deps.Deps{
-		Cfg:         cfg,
-		Fs:          fs,
-		FileCaches:  fileCaches,
-		ExecHelper:  ex,
-		ContentSpec: cs,
-		Log:         logger,
-		LogDistinct: helpers.NewDistinctLogger(logger),
-	}
+	return d
 }
 
 func newTestNs() *Namespace {
-	v := config.New()
-	v.Set("contentDir", "content")
-	return New(newDeps(v))
+	return New(newDeps(config.New()))
 }

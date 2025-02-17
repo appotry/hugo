@@ -16,6 +16,7 @@ package hqt
 import (
 	"errors"
 	"fmt"
+	"math"
 	"reflect"
 	"strings"
 
@@ -38,6 +39,11 @@ var IsSameType qt.Checker = &typeChecker{
 	argNames: []string{"got", "want"},
 }
 
+// IsSameFloat64 asserts that two float64 values are equal within a small delta.
+var IsSameFloat64 = qt.CmpEquals(cmp.Comparer(func(a, b float64) bool {
+	return math.Abs(a-b) < 0.0001
+}))
+
 type argNames []string
 
 func (a argNames) ArgNames() []string {
@@ -49,7 +55,7 @@ type typeChecker struct {
 }
 
 // Check implements Checker.Check by checking that got and args[0] is of the same type.
-func (c *typeChecker) Check(got interface{}, args []interface{}, note func(key string, value interface{})) (err error) {
+func (c *typeChecker) Check(got any, args []any, note func(key string, value any)) (err error) {
 	if want := args[0]; reflect.TypeOf(got) != reflect.TypeOf(want) {
 		if _, ok := got.(error); ok && want == nil {
 			return errors.New("got non-nil error")
@@ -63,8 +69,8 @@ type stringChecker struct {
 	argNames
 }
 
-// Check implements Checker.Check by checking that got and args[0] represents the same normalized text (whitespace etc. trimmed).
-func (c *stringChecker) Check(got interface{}, args []interface{}, note func(key string, value interface{})) (err error) {
+// Check implements Checker.Check by checking that got and args[0] represents the same normalized text (whitespace etc. removed).
+func (c *stringChecker) Check(got any, args []any, note func(key string, value any)) (err error) {
 	s1, s2 := cast.ToString(got), cast.ToString(args[0])
 
 	if s1 == s2 {
@@ -81,23 +87,50 @@ func (c *stringChecker) Check(got interface{}, args []interface{}, note func(key
 }
 
 func normalizeString(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+
 	lines := strings.Split(strings.TrimSpace(s), "\n")
 	for i, line := range lines {
-		lines[i] = strings.TrimSpace(line)
+		lines[i] = strings.Join(strings.Fields(strings.TrimSpace(line)), "")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// IsAllElementsEqual asserts that all elements in the slice are equal.
+var IsAllElementsEqual qt.Checker = &sliceAllElementsEqualChecker{
+	argNames: []string{"got"},
+}
+
+type sliceAllElementsEqualChecker struct {
+	argNames
+}
+
+func (c *sliceAllElementsEqualChecker) Check(got any, args []any, note func(key string, value any)) (err error) {
+	gotSlice := reflect.ValueOf(got)
+	numElements := gotSlice.Len()
+	if numElements < 2 {
+		return nil
+	}
+	first := gotSlice.Index(0).Interface()
+	// Check that the others are equal to the first.
+	for i := 1; i < numElements; i++ {
+		if diff := cmp.Diff(first, gotSlice.Index(i).Interface()); diff != "" {
+			return fmt.Errorf("element %d is not equal to the first element:\n%s", i, diff)
+		}
 	}
 
-	return strings.Join(lines, "\n")
+	return nil
 }
 
 // DeepAllowUnexported creates an option to allow compare of unexported types
 // in the given list of types.
 // see https://github.com/google/go-cmp/issues/40#issuecomment-328615283
-func DeepAllowUnexported(vs ...interface{}) cmp.Option {
+func DeepAllowUnexported(vs ...any) cmp.Option {
 	m := make(map[reflect.Type]struct{})
 	for _, v := range vs {
 		structTypes(reflect.ValueOf(v), m)
 	}
-	var typs []interface{}
+	var typs []any
 	for t := range m {
 		typs = append(typs, reflect.New(t).Elem().Interface())
 	}
